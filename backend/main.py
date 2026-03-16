@@ -1,0 +1,727 @@
+"""
+Писарь v3 — Backend API
+FastAPI + Nexara STT + Anthropic Claude + SQLite
+"""
+
+import os
+import json
+import re
+import tempfile
+import sqlite3
+import uuid
+import httpx
+from datetime import datetime
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from anthropic import Anthropic
+
+app = FastAPI(title="Писарь API", version="3.0.0")
+
+# Serve React static files in production
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import pathlib
+
+STATIC_DIR = pathlib.Path(__file__).parent / "static"
+DB_PATH = pathlib.Path(__file__).parent / "pisar.db"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ─── Database ───
+
+def get_db():
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS records (
+            id TEXT PRIMARY KEY,
+            patient_name TEXT DEFAULT '',
+            diagnosis_code TEXT DEFAULT '',
+            specialty TEXT DEFAULT '',
+            summary TEXT DEFAULT '',
+            sections TEXT DEFAULT '[]',
+            transcript TEXT DEFAULT '',
+            created_at TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+anthropic_client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+
+# Nexara API для распознавания речи
+NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
+NEXARA_API_KEY = os.environ.get("NEXARA_API_KEY", "")
+
+ALLOWED_AUDIO = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".webm", ".mp4", ".mpeg", ".mpga", ".oga", ".wma", ".aac"}
+
+# ─── Расширенные промпты по специальностям ───
+
+PROMPTS = {
+    "psychiatrist": """Ты — ИИ-ассистент психиатра психоневрологического диспансера (ПНД). Получив расшифровку речи врача, структурируй её в документ первичного осмотра пациента по ТОЧНОМУ формату ПНД.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента если упомянута, иначе пустая строка",
+  "date": "Дата приёма если упомянута, иначе пустая строка",
+  "specialty": "Психиатр",
+  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
+  "sections": [
+    {
+      "title": "Обращение",
+      "content": "Обратился в ДС: первично/повторно; цель (для обследования и подбора терапии / для лечения / для обследования по линии РВК и т.д.)."
+    },
+    {
+      "title": "Жалобы",
+      "content": "Жалобы пациента в кавычках, как высказывает сам пациент. Если активно не предъявляет — указать."
+    },
+    {
+      "title": "Анамнез жизни",
+      "content": "Место рождения, состав семьи (полная/неполная, братья/сёстры). Данные о психопатологически отягощённой наследственности. Раннее развитие. ДДУ. Школа (возраст, успеваемость, отношения со сверстниками, буллинг). Дополнительное образование, кружки, секции. Дальнейшее образование (ВУЗ, ПТУ, специальность). Трудовая деятельность (где работал, текущее трудоустройство). Семейное положение, романтические отношения, дети. Проживание (с кем, условия). Лицензия на ношение оружия (имеет/не имеет). Водительские права (имеет/не имеет)."
+    },
+    {
+      "title": "Криминальный анамнез",
+      "content": "Судим/не судим. Привлекался ли к административной и уголовной ответственности."
+    },
+    {
+      "title": "Перенесённые заболевания",
+      "content": "Детские инфекции, ОРВИ. ЧМТ (когда, сколько раз, стационарное лечение). Операции (какие, когда). Хронические соматические заболевания. Другие травмы, переливания крови, судорожные припадки."
+    },
+    {
+      "title": "Данные обследований",
+      "content": "Результаты имеющихся обследований с датами и источниками: рентгенография, ЭКГ, анализы крови (БАК, КАК, HBsAg, AntiHCV), осмотры специалистов, ЭПО и др. Если данных нет — 'Актуальных данных обследований не предоставил'."
+    },
+    {
+      "title": "Аллергоанамнез",
+      "content": "Аллергические реакции на лекарства, продукты и др. с указанием характера реакции (отёк, сыпь и т.д.). Если нет — 'спокойный'."
+    },
+    {
+      "title": "Эпиданамнез",
+      "content": "Отягощён / не отягощён. Контакты с инфекционными больными за последние 14 дней."
+    },
+    {
+      "title": "Наркоанамнез",
+      "content": "Курение (курит/не курит, количество). Алкоголь (употребляет/не употребляет, частота, количество). Наркотические вещества (употребление, вид, частота, формирование зависимости). Если отрицает — указать."
+    },
+    {
+      "title": "Анамнез заболевания",
+      "content": "Данные за психопатологически отягощённую наследственность. Преморбидные особенности личности (характер с детства, общительность, замкнутость). Дебют психических нарушений (когда, при каких обстоятельствах, провоцирующие факторы). Хронологическое описание клинической картины: симптомы, их динамика, периоды ухудшения и улучшения. Обращения за психиатрической помощью (когда, куда, стационарно/амбулаторно). Проводившееся лечение (препараты с дозировками, эффективность, побочные эффекты, причины смены терапии). Выписные диагнозы. Текущее лечение и его эффективность. Причина текущей госпитализации/обращения."
+    },
+    {
+      "title": "Психическое состояние",
+      "content": "Сознание (формально не помрачено / помрачено). Ориентировка в месте, времени и собственной личности. Внешний вид (опрятен, неопрятен, особенности). Контакт (охотно/неохотно вступает в беседу, формально). Поведение (тревожен, суетлив, спокоен, заторможен). Речь (темп, спонтанность, многоречивость/малоговорящий). Мышление (темп, структурные нарушения — разноплановость, детализация, резонёрство, обстоятельность; содержание — навязчивые, сверхценные, бредовые идеи). Обманы восприятия (галлюцинации — отрицает/обнаруживает). Эмоциональная сфера (фон настроения, аффект, адекватность реакций, ангедония). Волевая сфера (мотивация, активность). Агрессивные и аутоагрессивные тенденции. Внимание и память. Интеллект (соответствие возрасту и образованию). Сон (продолжительность, нарушения). Аппетит. Критика к своему состоянию (полная / неполная / отсутствует)."
+    },
+    {
+      "title": "Соматический статус",
+      "content": "Общее состояние. Рост, вес, ИМТ, обхват талии. Кожные покровы и видимые слизистые. Задняя стенка глотки. Периферические лимфоузлы. Сердечные тоны (ясные/приглушённые, ритмичные, шумы). АД, ЧСС. Дыхание (везикулярное, хрипы). Живот (мягкий, безболезненный). Печень, селезёнка. Симптом поколачивания. Периферические отёки. Физиологические отправления."
+    },
+    {
+      "title": "Неврологический статус",
+      "content": "Лицо (симметрично/асимметрично). Зрачки (равновеликие, D=S, фотореакции). Язык (по средней линии/девиация). Глотание и фонация. Сухожильные рефлексы (D=S, живые/снижены). Мышечный тонус. Нарушения чувствительности, парезы, параличи. Поза Ромберга. Пальценосовая проба. Очаговая и менингеальная симптоматика. Пальпация остистых отростков."
+    },
+    {
+      "title": "Обоснование диагноза",
+      "content": "Краткое обоснование диагноза на основании данных анамнеза, клинической картины, динамики состояния и ответа на терапию. Дифференциальная диагностика при необходимости."
+    },
+    {
+      "title": "Диагноз",
+      "content": "Основной диагноз в формате: синдром, состояние ремиссии/обострения, код МКБ-10. Сопутствующие диагнозы."
+    },
+    {
+      "title": "Социальный статус",
+      "content": "Учёба/работа, инвалидность, состоит ли в ЦЗН."
+    },
+    {
+      "title": "План обследования и лечения",
+      "content": "Режим. Диета. Плановые обследования (консультации специалистов, ЭПО, ЭЭГ, анализы, направления). Текущая фармакотерапия (препарат, дозировка, время приёма, цель назначения). Планируемые изменения терапии. Психотерапия (индивидуальная, групповая). Коррекция по состоянию."
+    }
+  ],
+  "summary": "Краткое резюме осмотра в 1-2 предложения"
+}
+
+Правила:
+- Используй ТОЧНЫЙ стиль написания психиатрических записей ПНД (как в приведённых примерах эталонных записей)
+- Жалобы пиши в кавычках — как говорит сам пациент
+- Анамнез жизни — связным текстом, НЕ списком
+- Анамнез заболевания — хронологически, связным текстом с конкретными датами и описанием клинической картины
+- Психическое состояние — связным текстом, описательно
+- Соматический и неврологический статус — кратко, по пунктам через точку
+- Обоснование диагноза — аргументированный связный текст
+- Заполняй разделы ТОЛЬКО на основе предоставленных данных
+- Если данных для раздела нет — напиши "Данные не предоставлены"
+- НЕ придумывай информацию, которой нет в расшифровке
+- Пиши на русском языке
+- Формальную преамбулу (представился психиатром, разъяснены права, согласие на осмотр) НЕ включай — она добавляется автоматически""",
+
+    "psychiatrist_diary": """Ты — ИИ-ассистент психиатра ПНД. На основе предоставленного анамнеза жизни и текущего описания состояния пациента составь дневниковую запись (дневник наблюдения) по формату ПНД.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента если упомянута, иначе пустая строка",
+  "date": "Дата если упомянута, иначе пустая строка",
+  "specialty": "Психиатр (дневник)",
+  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
+  "sections": [
+    {
+      "title": "Психическое состояние",
+      "content": "Описание текущего психического состояния: сознание, ориентировка, контакт, внешний вид, поведение, настроение, аффект, мышление (темп, содержание, нарушения), восприятие (обманы), волевая сфера, сон, аппетит, критика. Динамика по сравнению с предыдущими осмотрами если отмечена."
+    },
+    {
+      "title": "Соматический статус",
+      "content": "Краткий соматический статус: общее состояние, АД, ЧСС, жалобы соматического характера. Если без изменений — указать 'Соматически без отрицательной динамики'."
+    },
+    {
+      "title": "Терапия",
+      "content": "Текущая фармакотерапия: препараты с дозировками и временем приёма. Изменения в терапии (если были). Переносимость терапии, побочные эффекты."
+    },
+    {
+      "title": "Динамика состояния",
+      "content": "Оценка динамики: положительная / отрицательная / без существенной динамики. Конкретные изменения в симптоматике. Что улучшилось, что сохраняется."
+    },
+    {
+      "title": "План",
+      "content": "Продолжить / изменить терапию. Дополнительные обследования. Консультации. Следующий осмотр."
+    }
+  ],
+  "summary": "Краткое резюме дневниковой записи в 1 предложение"
+}
+
+Правила:
+- Стиль написания — лаконичный, профессиональный, как в дневниках наблюдения ПНД
+- Психическое состояние — связным текстом, описательно
+- Используй данные из предоставленного анамнеза для контекста
+- Заполняй ТОЛЬКО на основе предоставленных данных
+- НЕ придумывай информацию
+- Пиши на русском языке""",
+
+    "therapist": """Ты — ИИ-ассистент терапевта. Получив расшифровку речи врача, структурируй её в полноценный медицинский документ терапевтического приёма.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "ФИО пациента если упомянуто, иначе пустая строка",
+  "date": "Дата приёма если упомянута, иначе пустая строка",
+  "specialty": "Терапевт",
+  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
+  "sections": [
+    {
+      "title": "Жалобы",
+      "content": "Основные жалобы с детализацией каждой:\n- Локализация, иррадиация\n- Характер (жжение, покалывание, давление и т.д.)\n- Провоцирующие факторы\n- Продолжительность и интенсивность\n- Что приносит облегчение\n- Сопутствующие симптомы\n- Дополнительные жалобы"
+    },
+    {
+      "title": "Анамнез заболевания (Anamnesis morbi)",
+      "content": "Хронологическое описание:\n- Когда и при каких обстоятельствах заболел\n- Первые проявления\n- Обращения к врачам, обследования, диагнозы\n- Проводившееся лечение и его эффективность\n- Динамика симптомов\n- Частота обострений\n- Трудоспособность"
+    },
+    {
+      "title": "Анамнез жизни (Anamnesis vitae)",
+      "content": "- Биографические данные\n- Семейно-половой анамнез\n- Трудовой анамнез, профвредности\n- Бытовые условия, питание\n- Вредные привычки\n- Перенесённые заболевания\n- Эпидемиологический анамнез\n- Аллергологический анамнез\n- Наследственность"
+    },
+    {
+      "title": "Объективный осмотр (Status praesens)",
+      "content": "- Общее состояние, сознание, положение\n- Телосложение, рост, вес, ИМТ\n- Кожные покровы и слизистые\n- Лимфатические узлы\n- Опорно-двигательная система\n- Органы дыхания (ЧДД, перкуссия, аускультация)\n- Сердечно-сосудистая система (АД, ЧСС, тоны, шумы)\n- Органы пищеварения (язык, живот, печень, селезёнка)\n- Мочевыделительная система\n- Нервная система\n- Температура тела"
+    },
+    {
+      "title": "Диагноз",
+      "content": "Основной диагноз по МКБ-10.\nСопутствующие заболевания."
+    },
+    {
+      "title": "Назначения",
+      "content": "- Медикаментозная терапия (препарат, дозировка, кратность, длительность)\n- Немедикаментозное лечение\n- Обследования (анализы, ЭКГ, УЗИ и т.д.)\n- Консультации специалистов\n- Дата повторного приёма\n- Рекомендации по режиму и питанию"
+    }
+  ],
+  "summary": "Краткое резюме приёма в 1-2 предложения"
+}
+
+Правила:
+- Профессиональная медицинская терминология
+- Заполняй ТОЛЬКО на основе предоставленных данных
+- Нет данных = "Данные не предоставлены"
+- НЕ придумывай информацию
+- МКБ-10, русский язык""",
+
+    "pediatrician": """Ты — ИИ-ассистент педиатра. Получив расшифровку речи врача, структурируй её в полноценный медицинский документ педиатрического приёма.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "ФИО ребёнка если упомянуто, иначе пустая строка",
+  "date": "Дата приёма если упомянута, иначе пустая строка",
+  "specialty": "Педиатр",
+  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
+  "sections": [
+    {
+      "title": "Жалобы",
+      "content": "Жалобы (со слов родителей/ребёнка):\n- Основные жалобы с детализацией\n- Дополнительные жалобы"
+    },
+    {
+      "title": "Анамнез заболевания",
+      "content": "- Когда заболел, с чего началось\n- Динамика симптомов\n- Проводившееся лечение до обращения\n- Эффективность лечения"
+    },
+    {
+      "title": "Анамнез жизни",
+      "content": "- Течение беременности и родов у матери\n- Вес и рост при рождении, оценка по Апгар\n- Вскармливание (грудное/искусственное)\n- Перенесённые заболевания\n- Прививки (по календарю/нет)\n- Аллергологический анамнез\n- Наследственность"
+    },
+    {
+      "title": "Объективный осмотр",
+      "content": "- Общее состояние, сознание, активность\n- Температура тела\n- Кожные покровы и слизистые\n- Зев, миндалины\n- Лимфатические узлы\n- Носовое дыхание\n- Органы дыхания (ЧДД, аускультация)\n- Сердечно-сосудистая система (ЧСС)\n- Живот\n- Стул, мочеиспускание"
+    },
+    {
+      "title": "Физическое развитие",
+      "content": "- Возраст\n- Вес, рост\n- Соответствие возрастным нормам\n- Центильные коридоры если возможно оценить"
+    },
+    {
+      "title": "Диагноз",
+      "content": "Основной диагноз по МКБ-10.\nСопутствующие."
+    },
+    {
+      "title": "Назначения",
+      "content": "- Медикаментозная терапия (с дозировками по весу/возрасту)\n- Режим, питание\n- Обследования\n- Дата повторного осмотра\n- Показания для экстренного обращения"
+    }
+  ],
+  "summary": "Краткое резюме приёма в 1-2 предложения"
+}
+
+Правила:
+- Педиатрическая терминология, учитывать возраст
+- Заполняй ТОЛЬКО на основе данных
+- Нет данных = "Данные не предоставлены"
+- НЕ придумывай
+- МКБ-10, русский язык""",
+}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "2.0.0"}
+
+
+@app.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    """Распознавание речи через Nexara API. Принимает аудиофайл любого формата."""
+    if not NEXARA_API_KEY:
+        raise HTTPException(status_code=500, detail="NEXARA_API_KEY не задан. Получите ключ на nexara.ru")
+
+    # Проверяем формат файла
+    filename = audio.filename or "audio.webm"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext and ext not in ALLOWED_AUDIO:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Формат {ext} не поддерживается. Допустимые: MP3, WAV, M4A, OGG, FLAC, WebM",
+        )
+
+    # Сохраняем во временный файл
+    suffix = ext or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await audio.read()
+        if len(content) > 100 * 1024 * 1024:  # 100 МБ лимит
+            raise HTTPException(status_code=400, detail="Файл слишком большой (максимум 100 МБ)")
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            with open(tmp_path, "rb") as audio_file:
+                response = await client.post(
+                    NEXARA_API_URL,
+                    headers={"Authorization": f"Bearer {NEXARA_API_KEY}"},
+                    files={"file": (filename, audio_file)},
+                    data={
+                        "task": "transcribe",
+                        "language": "ru",
+                        "model": "whisper-1",
+                        "response_format": "json",
+                    },
+                )
+
+            if response.status_code != 200:
+                err_text = response.text
+                if "insufficient" in err_text.lower() or "quota" in err_text.lower():
+                    raise HTTPException(status_code=429, detail="Недостаточно средств на аккаунте Nexara. Пополните баланс на nexara.ru")
+                raise HTTPException(status_code=500, detail=f"Ошибка Nexara ({response.status_code}): {err_text[:200]}")
+
+            data = response.json()
+            text = data.get("text", "").strip()
+
+            if not text:
+                raise HTTPException(status_code=400, detail="Не удалось распознать речь в записи")
+
+            return {"text": text, "filename": filename}
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Превышено время ожидания ответа от сервера распознавания. Попробуйте файл меньшего размера.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка распознавания речи: {str(e)}")
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/structure")
+async def structure_text(
+    text: str = Form(...),
+    specialty: str = Form("psychiatrist"),
+):
+    """Структурирование текста через Claude API."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY не задан")
+
+    if specialty not in PROMPTS:
+        raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
+
+    try:
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8192,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f'{PROMPTS[specialty]}\n\nРасшифровка речи врача:\n"{text}"',
+                }
+            ],
+        )
+        response_text = ""
+        for block in message.content:
+            if block.type == "text":
+                response_text += block.text
+
+        cleaned = response_text.strip()
+        # Убираем markdown обёртки если есть
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1]
+        if cleaned.endswith("```"):
+            cleaned = cleaned.rsplit("```", 1)[0]
+        cleaned = cleaned.strip()
+
+        # Попытка 1: прямой парсинг
+        try:
+            result = json.loads(cleaned)
+            return result
+        except json.JSONDecodeError:
+            pass
+
+        # Попытка 2: убираем управляющие символы (кроме уже экранированных)
+        def clean_json_string(s):
+            # Заменяем literal newlines/tabs внутри строк на экранированные версии
+            # Но не трогаем уже экранированные \n, \t
+            result = []
+            in_string = False
+            escape = False
+            for ch in s:
+                if escape:
+                    result.append(ch)
+                    escape = False
+                    continue
+                if ch == '\\' and in_string:
+                    result.append(ch)
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    result.append(ch)
+                    continue
+                if in_string:
+                    if ch == '\n':
+                        result.append('\\n')
+                    elif ch == '\r':
+                        result.append('\\r')
+                    elif ch == '\t':
+                        result.append('\\t')
+                    elif ord(ch) < 0x20:
+                        result.append(' ')
+                    else:
+                        result.append(ch)
+                else:
+                    result.append(ch)
+            return ''.join(result)
+
+        try:
+            cleaned2 = clean_json_string(cleaned)
+            result = json.loads(cleaned2)
+            return result
+        except json.JSONDecodeError:
+            pass
+
+        # Попытка 3: извлечь JSON из текста регулярным выражением
+        json_match = re.search(r'\{[\s\S]*\}', cleaned)
+        if json_match:
+            try:
+                cleaned3 = clean_json_string(json_match.group())
+                result = json.loads(cleaned3)
+                return result
+            except json.JSONDecodeError:
+                pass
+
+        # Попытка 4: попросить Claude исправить
+        raise json.JSONDecodeError("All parsing attempts failed", cleaned[:100], 0)
+
+    except json.JSONDecodeError:
+        try:
+            fix_message = anthropic_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=8192,
+                messages=[
+                    {"role": "user", "content": f"Этот JSON невалидный. Исправь его и верни ТОЛЬКО валидный JSON. Никаких пояснений, только JSON:\n\n{response_text[:12000]}"}
+                ],
+            )
+            fix_text = ""
+            for block in fix_message.content:
+                if block.type == "text":
+                    fix_text += block.text
+            fix_text = fix_text.strip()
+            if fix_text.startswith("```"):
+                fix_text = fix_text.split("\n", 1)[-1]
+            if fix_text.endswith("```"):
+                fix_text = fix_text.rsplit("```", 1)[0]
+            fix_text = fix_text.strip()
+
+            def clean_json_string2(s):
+                result = []
+                in_string = False
+                escape = False
+                for ch in s:
+                    if escape:
+                        result.append(ch)
+                        escape = False
+                        continue
+                    if ch == '\\' and in_string:
+                        result.append(ch)
+                        escape = True
+                        continue
+                    if ch == '"':
+                        in_string = not in_string
+                        result.append(ch)
+                        continue
+                    if in_string and ch == '\n':
+                        result.append('\\n')
+                    elif in_string and ch == '\r':
+                        result.append('\\r')
+                    elif in_string and ch == '\t':
+                        result.append('\\t')
+                    elif in_string and ord(ch) < 0x20:
+                        result.append(' ')
+                    else:
+                        result.append(ch)
+                return ''.join(result)
+
+            result = json.loads(clean_json_string2(fix_text))
+            return result
+        except Exception as fix_err:
+            raise HTTPException(status_code=500, detail="Ошибка парсинга ответа. Попробуйте ещё раз.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка Claude: {str(e)}")
+
+
+@app.post("/process")
+async def process_audio(
+    audio: UploadFile = File(...),
+    specialty: str = Form("psychiatrist"),
+):
+    """Полный пайплайн: аудио → Whisper → Claude → документ."""
+    transcription = await transcribe_audio(audio)
+    text = transcription["text"]
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Не удалось распознать речь в записи")
+    result = await structure_text(text=text, specialty=specialty)
+    return {"transcript": text, "document": result}
+
+
+# ─── Patient Records API ───
+
+@app.post("/records")
+async def save_record(
+    patient_name: str = Form(""),
+    diagnosis_code: str = Form(""),
+    specialty: str = Form(""),
+    summary: str = Form(""),
+    sections: str = Form("[]"),
+    transcript: str = Form(""),
+):
+    """Сохранить запись приёма в базу данных."""
+    record_id = str(uuid.uuid4())[:8]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO records (id, patient_name, diagnosis_code, specialty, summary, sections, transcript, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (record_id, patient_name, diagnosis_code, specialty, summary, sections, transcript, now),
+    )
+    conn.commit()
+    conn.close()
+    return {"id": record_id, "created_at": now}
+
+
+@app.get("/records")
+async def list_records():
+    """Список всех записей (краткая информация)."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, patient_name, diagnosis_code, specialty, summary, created_at FROM records ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/records/{record_id}")
+async def get_record(record_id: str):
+    """Получить полную запись по ID."""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+    record = dict(row)
+    record["sections"] = json.loads(record["sections"])
+    return record
+
+
+@app.delete("/records/{record_id}")
+async def delete_record(record_id: str):
+    """Удалить запись."""
+    conn = get_db()
+    conn.execute("DELETE FROM records WHERE id = ?", (record_id,))
+    conn.commit()
+    conn.close()
+    return {"deleted": record_id}
+
+
+# ─── Word Export ───
+
+from fastapi.responses import StreamingResponse
+import io
+
+@app.post("/export-word")
+async def export_word(
+    patient_name: str = Form(""),
+    diagnosis_code: str = Form(""),
+    specialty: str = Form(""),
+    summary: str = Form(""),
+    sections: str = Form("[]"),
+):
+    """Экспорт документа приёма в Word (.docx) по формату ПНД."""
+    from docx import Document as DocxDocument
+    from docx.shared import Pt, Cm, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = DocxDocument()
+
+    # Page margins
+    for section in doc.sections:
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(1.5)
+
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Times New Roman'
+    font.size = Pt(12)
+    style.paragraph_format.space_after = Pt(2)
+    style.paragraph_format.line_spacing = 1.15
+
+    # Title
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("Первичный осмотр")
+    run.bold = True
+    run.font.size = Pt(14)
+    run.font.name = 'Times New Roman'
+
+    # Patient name
+    if patient_name:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(patient_name)
+        run.bold = True
+        run.font.size = Pt(13)
+        run.font.name = 'Times New Roman'
+
+    # Preamble
+    preamble = doc.add_paragraph()
+    preamble.paragraph_format.space_before = Pt(8)
+    run = preamble.add_run(
+        'Представился(лась) психиатром, разъяснены права согласно закону РФ '
+        '"О психиатрической помощи и гарантиях прав граждан при ее оказании". '
+        'На беседу согласен(а). Подтвердил(а) согласие на осмотр и/или лечение '
+        'в письменной форме.'
+    )
+    run.font.name = 'Times New Roman'
+    run.font.size = Pt(12)
+
+    # Sections
+    sections_data = json.loads(sections) if isinstance(sections, str) else sections
+
+    for sec in sections_data:
+        title_text = sec.get("title", "")
+        content_text = sec.get("content", "")
+
+        if not content_text or content_text == "Данные не предоставлены":
+            continue
+
+        # Section title as bold inline prefix (like in the sample records)
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(6)
+        run_title = p.add_run(f"{title_text}: ")
+        run_title.bold = True
+        run_title.font.name = 'Times New Roman'
+        run_title.font.size = Pt(12)
+
+        run_content = p.add_run(content_text)
+        run_content.font.name = 'Times New Roman'
+        run_content.font.size = Pt(12)
+
+    # Save to buffer
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    filename = f"PO_{patient_name.split()[0] if patient_name else 'patient'}.docx"
+
+    from urllib.parse import quote
+    encoded_filename = quote(filename)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+    )
+
+
+# ─── Serve React frontend in production ───
+
+@app.on_event("startup")
+async def mount_static():
+    if STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR / "static")), name="static-assets")
+
+
+@app.get("/{full_path:path}")
+async def serve_react(full_path: str):
+    """Serve React app for all non-API routes."""
+    if STATIC_DIR.exists():
+        # Try to serve the exact file
+        file_path = STATIC_DIR / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        # Fallback to index.html for React routing
+        index = STATIC_DIR / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+    return {"detail": "Frontend not built. Run: cd frontend && npm run build"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))

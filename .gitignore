@@ -1,0 +1,8 @@
+node_modules/
+frontend/build/
+backend/venv/
+backend/__pycache__/
+backend/pisar.db
+*.pyc
+.env
+.DS_Store
