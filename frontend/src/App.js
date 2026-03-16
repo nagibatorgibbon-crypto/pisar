@@ -7,7 +7,7 @@ const SPECS = { psychiatrist: { label: "Психиатр" }, therapist: { label:
 
 const DEMOS = {
   psychiatrist: `Пациент Иванов Сергей Петрович, 42 года, обратился самостоятельно. Жалобы на сниженное настроение в течение последних трёх месяцев, нарушения сна, снижение аппетита, потерю интереса. Отмечает трудности концентрации, чувство вины. Суицидальные мысли отрицает. Анамнез: первый эпизод два года назад после развода. Текущий эпизод связывает с увольнением. Наследственность: мать — депрессия. Курит 10 сигарет/день. Алкоголь умеренно. Психический статус: сознание ясное, ориентирован верно. Настроение сниженное, мышление замедленное, идеи самообвинения. Галлюцинаций нет. Критика сохранена. АД 130/85, пульс 72. Диагноз: F33.1 рекуррентное депрессивное расстройство, средней степени. Назначения: сертралин 50 мг утром, миртазапин 15 мг на ночь. КПТ 1 раз/нед. Повтор через 2 недели.`,
-  psychiatrist_diary: `Анамнез жизни: Родился в г. Санкт-Петербург, единственный ребёнок в полной семье. Образование высшее техническое. Разведён, детей нет. Работал инженером, уволен по сокращению. Наследственность: мать — депрессия. Диагноз: F33.1 рекуррентное депрессивное расстройство. Получает сертралин 100 мг/сут, миртазапин 15 мг на ночь.\n\nТекущее состояние: Пациент на повторном осмотре через 2 недели после начала терапии. Отмечает улучшение сна, засыпает за 20-30 минут. Настроение несколько улучшилось, появился интерес к чтению. Однако сохраняется утомляемость, трудности концентрации на работе. Аппетит восстановился. Суицидальные мысли отрицает. Побочных эффектов терапии не отмечает. АД 125/80, пульс 70.`,
+  psychiatrist_diary: `Пациент Воронович, 25 лет. Диагноз: F32.1 Депрессивный эпизод средней степени. Терапия: сертралин 100 мг утром, кветиапин 25 мг на ночь.\n\nАнамнез: Рос замкнутым ребёнком, в школе подвергался издевательствам из-за лишнего веса. Работает удалённо программистом. Не женат, в отношениях. Жалобы при поступлении: отсутствие настроения и эмоций, нарушения сна, фантазии о причинении вреда себе и окружающим. Курит 1 пачку в день.\n\nТекущее состояние: На фоне терапии отмечает улучшение сна, засыпает легче. Сохраняется некоторая сонливость днём. Фантазии стали менее навязчивыми. Аппетит нестабильный. Настроение ровное, без выраженных колебаний.`,
   therapist: `Пациентка Козлова Мария Ивановна 56 лет, давящие головные боли, АД до 160/100, головокружение. Гипертензия 5 лет, лозартан 50 мг нерегулярно. Аллергия на пенициллин. Мать — инсульт. ИМТ 31, АД 155/95, пульс 78. Диагноз: ГБ II ст., I11.9. Назначения: лозартан 100 мг, амлодипин 5 мг. Повтор через 2 нед.`,
   pediatrician: `Ребёнок Петров Алексей, 4 года, t 38.5, кашель, насморк 2 дня. Аллергия на амоксициллин. Осмотр: t 37.8, зев гиперемирован, дыхание жёсткое. Вес 17 кг, рост 104 см. Диагноз: ОРВИ, трахеобронхит J20.9. Назначения: ибупрофен, ингаляции, амброксол. Повтор через 3 дня.`,
 };
@@ -58,6 +58,7 @@ export default function App() {
   const [time, setTime] = useState(0);
   const [uploadName, setUploadName] = useState("");
   const [saved, setSaved] = useState(false);
+  const [diaryPeriod, setDiaryPeriod] = useState("1week");
   const [records, setRecords] = useState([]);
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [loadingRecords, setLoadingRecords] = useState(false);
@@ -71,6 +72,7 @@ export default function App() {
   const fmt = (s) => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
   const isDiary = spec === "psychiatrist" && psyMode === "diary";
   const getSpecKey = () => isDiary ? "psychiatrist_diary" : spec;
+  const DIARY_PERIODS = { "1week": "1 неделя", "2weeks": "2 недели", "1month": "1 месяц" };
 
   useEffect(() => { fetchRecords(); }, []);
   const fetchRecords = async () => { try { const r = await fetch(`${API}/records`); if (r.ok) setRecords(await r.json()); } catch(e){} };
@@ -84,10 +86,18 @@ export default function App() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const mr = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm" });
+      // Определяем поддерживаемый формат (Safari/iOS не поддерживает webm)
+      const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac", "audio/ogg", ""];
+      let selectedMime = "";
+      for (const mime of mimeTypes) {
+        if (!mime || MediaRecorder.isTypeSupported(mime)) { selectedMime = mime; break; }
+      }
+      const mrOptions = selectedMime ? { mimeType: selectedMime } : {};
+      const mr = new MediaRecorder(stream, mrOptions);
+      const ext = selectedMime.includes("mp4") || selectedMime.includes("aac") ? "m4a" : "webm";
       chunksRef.current = [];
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-      mr.onstop = async () => { await sendAudio(new Blob(chunksRef.current, { type: "audio/webm" }), "recording.webm", "mic"); };
+      mr.onstop = async () => { await sendAudio(new Blob(chunksRef.current, { type: selectedMime || "audio/webm" }), `recording.${ext}`, "mic"); };
       mrRef.current = mr; mr.start(1000); setRec(true); setTime(0);
       timerRef.current = setInterval(() => setTime((p) => p + 1), 1000);
     } catch (e) { setErr(e.name === "NotAllowedError" ? "Доступ к микрофону запрещён. Разрешите в настройках браузера." : `Ошибка: ${e.message}`); }
@@ -116,7 +126,11 @@ export default function App() {
     const t = text.trim(); if (!t) return setErr("Нет текста.");
     setLoading(true); setErr(""); setResult(null); setSaved(false);
     try {
-      const fd = new FormData(); fd.append("text", t); fd.append("specialty", getSpecKey());
+      let sendText = t;
+      if (isDiary) {
+        sendText = `Период генерации дневников: ${DIARY_PERIODS[diaryPeriod]}.\n\n${t}`;
+      }
+      const fd = new FormData(); fd.append("text", sendText); fd.append("specialty", getSpecKey());
       const res = await fetch(`${API}/structure`, { method: "POST", body: fd });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
       setResult(await res.json());
@@ -240,6 +254,17 @@ export default function App() {
               </div>
             )}
 
+            {isDiary && (
+              <div className="card">
+                <div className="section-label">Период дневников</div>
+                <div className="chips">
+                  <div className={`chip ${diaryPeriod === "1week" ? "active" : ""}`} onClick={() => setDiaryPeriod("1week")}>1 неделя</div>
+                  <div className={`chip ${diaryPeriod === "2weeks" ? "active" : ""}`} onClick={() => setDiaryPeriod("2weeks")}>2 недели</div>
+                  <div className={`chip ${diaryPeriod === "1month" ? "active" : ""}`} onClick={() => setDiaryPeriod("1month")}>1 месяц</div>
+                </div>
+              </div>
+            )}
+
             {!isDiary && (
               <div className="card">
                 <div className="section-label">Источник</div>
@@ -262,11 +287,11 @@ export default function App() {
                   {text && <button onClick={clear} className="clear-btn">Очистить</button>}
                 </div>
               </div>
-              <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={isDiary ? "Вставьте анамнез жизни пациента и опишите текущее состояние...\n\nНапример:\nАнамнез жизни: Родился в г. Санкт-Петербург...\nДиагноз: F33.1...\nТерапия: сертралин 100 мг/сут...\n\nТекущее состояние: На повторном осмотре отмечает улучшение сна..." : "Вставьте текст медицинской записи или используйте запись голоса..."} />
+              <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={isDiary ? "Вставьте данные пациента:\n\n1. ФИО, возраст\n2. Диагноз (МКБ-10)\n3. Текущая терапия (препараты, дозировки)\n4. Анамнез (кратко)\n5. Текущее состояние\n\nНа основе этих данных будут сгенерированы дневники за выбранный период." : "Вставьте текст медицинской записи или используйте запись голоса..."} />
             </div>
 
             <button onClick={process} disabled={loading || !text.trim()} className={`cta ${loading || !text.trim() ? "off" : ""}`}>
-              {loading ? <><span className="spinner" />{isDiary ? "Составляю дневник..." : "Структурирую..."}</> : isDiary ? "Составить дневник" : "Структурировать запись"}
+              {loading ? <><span className="spinner" />{isDiary ? `Составляю дневники за ${DIARY_PERIODS[diaryPeriod]}...` : "Структурирую..."}</> : isDiary ? `Составить дневники за ${DIARY_PERIODS[diaryPeriod]}` : "Структурировать запись"}
             </button>
             <a href="#" className="demo-link" onClick={loadDemo}>{isDiary ? "Загрузить пример для дневника →" : "Попробовать демо-запись →"}</a>
 
