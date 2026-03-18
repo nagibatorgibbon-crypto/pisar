@@ -1,6 +1,6 @@
 """
 Писарь v3 — Backend API
-FastAPI + Nexara STT + Anthropic Claude + SQLite
+FastAPI + Nexara STT + Anthropic Claude + SQLite + Auth
 """
 
 import os
@@ -10,8 +10,10 @@ import tempfile
 import sqlite3
 import uuid
 import httpx
+import hashlib
+import secrets
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from anthropic import Anthropic
 
@@ -44,8 +46,19 @@ def get_db():
 def init_db():
     conn = get_db()
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT DEFAULT '',
+            login TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            token TEXT UNIQUE,
+            created_at TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS records (
             id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT '',
             patient_name TEXT DEFAULT '',
             diagnosis_code TEXT DEFAULT '',
             specialty TEXT DEFAULT '',
@@ -55,6 +68,11 @@ def init_db():
             created_at TEXT DEFAULT ''
         )
     """)
+    # Миграция: добавить user_id если его нет (для старых баз)
+    try:
+        conn.execute("ALTER TABLE records ADD COLUMN user_id TEXT DEFAULT ''")
+    except Exception:
+        pass  # Колонка уже существует
     conn.commit()
     conn.close()
 
@@ -68,6 +86,80 @@ NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
 NEXARA_API_KEY = os.environ.get("NEXARA_API_KEY", "")
 
 ALLOWED_AUDIO = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".webm", ".mp4", ".mpeg", ".mpga", ".oga", ".wma", ".aac"}
+
+
+# ─── Auth helpers ───
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def get_user_by_token(token: str):
+    if not token:
+        return None
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE token = ?", (token,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def require_auth(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Необходима авторизация")
+    token = authorization.replace("Bearer ", "")
+    user = get_user_by_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Неверный токен")
+    return user
+
+
+# ─── Auth endpoints ───
+
+@app.post("/auth/register")
+async def register(login: str = Form(...), password: str = Form(...), name: str = Form("")):
+    if len(login) < 3:
+        raise HTTPException(status_code=400, detail="Логин должен быть минимум 3 символа")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Пароль должен быть минимум 4 символа")
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM users WHERE login = ?", (login,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Пользователь с таким логином уже существует")
+    user_id = str(uuid.uuid4())[:8]
+    token = secrets.token_hex(32)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn.execute(
+        "INSERT INTO users (id, name, login, password_hash, token, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, name or login, login, hash_password(password), token, now),
+    )
+    conn.commit()
+    conn.close()
+    return {"token": token, "user": {"id": user_id, "name": name or login, "login": login}}
+
+
+@app.post("/auth/login")
+async def auth_login(login: str = Form(...), password: str = Form(...)):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE login = ?", (login,)).fetchone()
+    conn.close()
+    if not row or row["password_hash"] != hash_password(password):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+    user = dict(row)
+    # Обновляем токен при каждом входе
+    token = secrets.token_hex(32)
+    conn = get_db()
+    conn.execute("UPDATE users SET token = ? WHERE id = ?", (token, user["id"]))
+    conn.commit()
+    conn.close()
+    return {"token": token, "user": {"id": user["id"], "name": user["name"], "login": user["login"]}}
+
+
+@app.get("/auth/me")
+async def auth_me(authorization: str = Header(None)):
+    user = require_auth(authorization)
+    return {"id": user["id"], "name": user["name"], "login": user["login"]}
+
 
 # ─── Расширенные промпты по специальностям ───
 
@@ -552,6 +644,101 @@ async def process_audio(
     return {"transcript": text, "document": result}
 
 
+# ─── Structure by Template ───
+
+@app.post("/structure-template")
+async def structure_by_template(
+    text: str = Form(...),
+    template: UploadFile = File(...),
+):
+    """Структурирование по загруженному шаблону документа."""
+    # Читаем шаблон
+    template_content = ""
+    filename = template.filename or "template.txt"
+    content_bytes = await template.read()
+
+    if filename.endswith(".txt"):
+        template_content = content_bytes.decode("utf-8", errors="ignore")
+    elif filename.endswith(".docx") or filename.endswith(".doc"):
+        # Извлекаем текст из docx
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            tmp.write(content_bytes)
+            tmp_path = tmp.name
+        try:
+            from docx import Document as DocxDocument
+            doc = DocxDocument(tmp_path)
+            paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            template_content = "\n".join(paragraphs)
+        finally:
+            os.unlink(tmp_path)
+    else:
+        template_content = content_bytes.decode("utf-8", errors="ignore")
+
+    if not template_content.strip():
+        raise HTTPException(status_code=400, detail="Не удалось извлечь текст из шаблона")
+
+    # Генерируем промпт на основе шаблона
+    prompt = f"""Ты — ИИ-ассистент для структурирования медицинских и деловых документов.
+
+Тебе предоставлен ШАБЛОН документа и ТЕКСТ, который нужно структурировать по этому шаблону.
+
+ШАБЛОН ДОКУМЕНТА (извлеки из него разделы и структуру):
+---
+{template_content[:3000]}
+---
+
+Проанализируй шаблон, определи его разделы (заголовки, пункты), и заполни каждый раздел данными из предоставленного текста.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{{
+  "patient_name": "ФИО если упомянуто",
+  "diagnosis_code": "Код МКБ-10 если определён",
+  "specialty": "Определи специальность из шаблона",
+  "sections": [
+    {{
+      "title": "Название раздела из шаблона",
+      "content": "Заполненный текст раздела"
+    }}
+  ],
+  "summary": "Краткое резюме документа в 1 предложение"
+}}
+
+Правила:
+- Сохраняй структуру и порядок разделов из шаблона
+- Заполняй разделы данными из предоставленного текста
+- Если данных для раздела нет — пиши "Данные не предоставлены"
+- Пиши на русском языке
+- Стиль — профессиональный, лаконичный"""
+
+    try:
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8192,
+            messages=[{"role": "user", "content": f"{prompt}\n\nТЕКСТ ДЛЯ СТРУКТУРИРОВАНИЯ:\n{text}"}],
+        )
+        raw = message.content[0].text.strip()
+        # Используем тот же парсер что и в structure
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+        if raw.endswith("```"):
+            raw = raw.rsplit("```", 1)[0]
+        raw = raw.strip()
+
+        result = json.loads(raw)
+        return result
+    except json.JSONDecodeError:
+        # Попытка извлечь JSON регуляркой
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        raise HTTPException(status_code=500, detail="Ошибка парсинга ответа. Попробуйте ещё раз.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
+
+
 # ─── Patient Records API ───
 
 @app.post("/records")
@@ -562,14 +749,16 @@ async def save_record(
     summary: str = Form(""),
     sections: str = Form("[]"),
     transcript: str = Form(""),
+    authorization: str = Header(None),
 ):
     """Сохранить запись приёма в базу данных."""
+    user = require_auth(authorization)
     record_id = str(uuid.uuid4())[:8]
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     conn = get_db()
     conn.execute(
-        "INSERT INTO records (id, patient_name, diagnosis_code, specialty, summary, sections, transcript, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (record_id, patient_name, diagnosis_code, specialty, summary, sections, transcript, now),
+        "INSERT INTO records (id, user_id, patient_name, diagnosis_code, specialty, summary, sections, transcript, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (record_id, user["id"], patient_name, diagnosis_code, specialty, summary, sections, transcript, now),
     )
     conn.commit()
     conn.close()
@@ -577,21 +766,24 @@ async def save_record(
 
 
 @app.get("/records")
-async def list_records():
-    """Список всех записей (краткая информация)."""
+async def list_records(authorization: str = Header(None)):
+    """Список записей текущего врача."""
+    user = require_auth(authorization)
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, patient_name, diagnosis_code, specialty, summary, created_at FROM records ORDER BY created_at DESC"
+        "SELECT id, patient_name, diagnosis_code, specialty, summary, created_at FROM records WHERE user_id = ? ORDER BY created_at DESC",
+        (user["id"],),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 @app.get("/records/{record_id}")
-async def get_record(record_id: str):
+async def get_record(record_id: str, authorization: str = Header(None)):
     """Получить полную запись по ID."""
+    user = require_auth(authorization)
     conn = get_db()
-    row = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
+    row = conn.execute("SELECT * FROM records WHERE id = ? AND user_id = ?", (record_id, user["id"])).fetchone()
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Запись не найдена")
@@ -601,10 +793,11 @@ async def get_record(record_id: str):
 
 
 @app.delete("/records/{record_id}")
-async def delete_record(record_id: str):
+async def delete_record(record_id: str, authorization: str = Header(None)):
     """Удалить запись."""
+    user = require_auth(authorization)
     conn = get_db()
-    conn.execute("DELETE FROM records WHERE id = ?", (record_id,))
+    conn.execute("DELETE FROM records WHERE id = ? AND user_id = ?", (record_id, user["id"]))
     conn.commit()
     conn.close()
     return {"deleted": record_id}
