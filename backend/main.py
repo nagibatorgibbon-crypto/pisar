@@ -622,11 +622,11 @@ async def structure_text(
 
     except json.JSONDecodeError:
         try:
-        fix_text = await gigachat_complete(
-            system_prompt="Ты — JSON-фиксатор. Возвращай ТОЛЬКО валидный JSON, без пояснений и markdown.",
-            user_text=f"Исправь этот JSON и верни ТОЛЬКО валидный JSON:\n\n{response_text[:12000]}",
-            max_tokens=8192,
-        )
+            fix_text = await gigachat_complete(
+                system_prompt="Ты — JSON-фиксатор. Возвращай ТОЛЬКО валидный JSON, без пояснений и markdown.",
+                user_text=f"Исправь этот JSON и верни ТОЛЬКО валидный JSON:\n\n{response_text[:12000]}",
+                max_tokens=8192,
+            )
             fix_text = fix_text.strip()
             if fix_text.startswith("```"):
                 fix_text = fix_text.split("\n", 1)[-1]
