@@ -1,6 +1,6 @@
 """
-Писарь v3 — Backend API
-FastAPI + Nexara STT + Anthropic Claude + SQLite + Auth
+Писарь v4 — Backend API
+FastAPI + Nexara STT + GigaChat (Сбербанк) + SQLite + Auth
 """
 
 import os
@@ -12,10 +12,9 @@ import uuid
 import httpx
 import hashlib
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from anthropic import Anthropic
 
 app = FastAPI(title="Писарь API", version="3.0.0")
 
@@ -79,7 +78,67 @@ def init_db():
 
 init_db()
 
-anthropic_client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+# ─── GigaChat API ───
+
+GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+GIGACHAT_API_URL  = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+GIGACHAT_MODEL    = "GigaChat-Max"
+
+_gigachat_token: str = ""
+_gigachat_token_expires: datetime = datetime.min
+
+
+async def get_gigachat_token() -> str:
+    global _gigachat_token, _gigachat_token_expires
+    if _gigachat_token and datetime.utcnow() < _gigachat_token_expires:
+        return _gigachat_token
+    key = os.environ.get("GIGACHAT_API_KEY", "")
+    if not key:
+        raise HTTPException(status_code=500, detail="GIGACHAT_API_KEY не задан. Укажите ключ авторизации GigaChat.")
+    async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+        resp = await client.post(
+            GIGACHAT_AUTH_URL,
+            headers={
+                "Authorization": f"Basic {key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "RqUID": str(uuid.uuid4()),
+            },
+            data={"scope": "GIGACHAT_API_PERS"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Ошибка авторизации GigaChat ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    _gigachat_token = data["access_token"]
+    expires_ms = data.get("expires_at", 0)
+    _gigachat_token_expires = datetime.utcfromtimestamp(expires_ms / 1000) - timedelta(seconds=60)
+    return _gigachat_token
+
+
+async def gigachat_complete(system_prompt: str, user_text: str, max_tokens: int = 8192) -> str:
+    global _gigachat_token
+    token = await get_gigachat_token()
+    payload = {
+        "model": GIGACHAT_MODEL,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_text},
+        ],
+    }
+    async with httpx.AsyncClient(verify=False, timeout=120.0) as client:
+        resp = await client.post(
+            GIGACHAT_API_URL,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+    if resp.status_code == 401:
+        _gigachat_token = ""
+        return await gigachat_complete(system_prompt, user_text, max_tokens)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Ошибка GigaChat ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
@@ -480,28 +539,16 @@ async def structure_text(
     text: str = Form(...),
     specialty: str = Form("psychiatrist"),
 ):
-    """Структурирование текста через Claude API."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY не задан")
-
+    """Структурирование текста через GigaChat API."""
     if specialty not in PROMPTS:
         raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
 
     try:
-        message = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response_text = await gigachat_complete(
+            system_prompt=PROMPTS[specialty],
+            user_text=f'Расшифровка речи врача:\n"{text}"',
             max_tokens=8192,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f'{PROMPTS[specialty]}\n\nРасшифровка речи врача:\n"{text}"',
-                }
-            ],
         )
-        response_text = ""
-        for block in message.content:
-            if block.type == "text":
-                response_text += block.text
 
         cleaned = response_text.strip()
         # Убираем markdown обёртки если есть
@@ -575,17 +622,11 @@ async def structure_text(
 
     except json.JSONDecodeError:
         try:
-            fix_message = anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=8192,
-                messages=[
-                    {"role": "user", "content": f"Этот JSON невалидный. Исправь его и верни ТОЛЬКО валидный JSON. Никаких пояснений, только JSON:\n\n{response_text[:12000]}"}
-                ],
-            )
-            fix_text = ""
-            for block in fix_message.content:
-                if block.type == "text":
-                    fix_text += block.text
+        fix_text = await gigachat_complete(
+            system_prompt="Ты — JSON-фиксатор. Возвращай ТОЛЬКО валидный JSON, без пояснений и markdown.",
+            user_text=f"Исправь этот JSON и верни ТОЛЬКО валидный JSON:\n\n{response_text[:12000]}",
+            max_tokens=8192,
+        )
             fix_text = fix_text.strip()
             if fix_text.startswith("```"):
                 fix_text = fix_text.split("\n", 1)[-1]
@@ -642,6 +683,73 @@ async def process_audio(
         raise HTTPException(status_code=400, detail="Не удалось распознать речь в записи")
     result = await structure_text(text=text, specialty=specialty)
     return {"transcript": text, "document": result}
+
+
+# ─── Diagnostic Assistant ───
+
+@app.post("/diagnose")
+async def diagnose(
+    sections: str = Form("[]"),
+    patient_name: str = Form(""),
+    transcript: str = Form(""),
+):
+    """Помощь с постановкой диагноза на основе данных приёма."""
+    sections_data = json.loads(sections) if isinstance(sections, str) else sections
+    sections_text = "\n".join([f"{s.get('title','')}: {s.get('content','')}" for s in sections_data if s.get('content') and s['content'] != 'Данные не предоставлены'])
+
+    prompt = """Ты — ИИ-ассистент врача-психиатра для помощи в диагностике. На основе предоставленных данных осмотра пациента выполни диагностический анализ.
+
+ВАЖНО:
+- Это ПРЕДПОЛОЖИТЕЛЬНЫЙ диагноз — рекомендация для врача, НЕ окончательный диагноз
+- Опирайся СТРОГО на клинические рекомендации Минздрава РФ и МКБ-10
+- Указывай конкретные диагностические критерии, которым соответствует клиническая картина
+- Лечение — по актуальным клиническим рекомендациям с указанием препаратов, дозировок и длительности
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "diagnosis": "Полная формулировка предположительного диагноза",
+  "icd_code": "Код МКБ-10 с расшифровкой, например: F32.1 Депрессивный эпизод средней степени",
+  "justification": "Подробное обоснование диагноза: какие симптомы и данные анамнеза соответствуют диагностическим критериям МКБ-10. Перечислить конкретные критерии и как они проявляются у данного пациента.",
+  "differential": "Дифференциальный диагноз: с какими расстройствами нужно дифференцировать и почему. Указать 2-3 альтернативных диагноза с кодами МКБ-10 и объяснить, почему основной диагноз более вероятен.",
+  "treatment": "Рекомендованное лечение по клиническим рекомендациям: 1) Фармакотерапия — препараты первой линии с дозировками (начальная и целевая доза), режим приёма, длительность курса. 2) Психотерапия — рекомендуемые методы. 3) Немедикаментозные методы. 4) Мониторинг — что контролировать и как часто.",
+  "examinations": "Рекомендуемые дополнительные обследования: лабораторные анализы, инструментальные исследования, консультации специалистов. Указать конкретно что и зачем."
+}
+
+Правила:
+- Диагноз формулируй по стандарту: основное заболевание, синдром, степень тяжести, тип течения
+- Код МКБ-10 — максимально точный (с подрубриками, например F32.1, а не просто F32)
+- Обоснование — со ссылками на конкретные критерии МКБ-10 (например, «необходимо наличие минимум 2 из 3 основных симптомов депрессии: сниженное настроение, утрата интересов, снижение энергии — у пациента выявлены все три»)
+- Лечение — по российским клиническим рекомендациям, с конкретными препаратами и дозировками
+- Пиши на русском языке, профессиональным медицинским языком"""
+
+    full_text = f"Данные пациента: {patient_name}\n\n{sections_text}"
+    if transcript:
+        full_text += f"\n\nИсходная расшифровка приёма:\n{transcript[:2000]}"
+
+    try:
+        raw = await gigachat_complete(
+            system_prompt=prompt,
+            user_text=f"ДАННЫЕ ОСМОТРА:\n{full_text}",
+            max_tokens=4096,
+        )
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+        if raw.endswith("```"):
+            raw = raw.rsplit("```", 1)[0]
+        raw = raw.strip()
+        result = json.loads(raw)
+        return result
+    except json.JSONDecodeError:
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        raise HTTPException(status_code=500, detail="Ошибка парсинга. Попробуйте ещё раз.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
 
 
 # ─── Structure by Template ───
@@ -711,12 +819,12 @@ async def structure_by_template(
 - Стиль — профессиональный, лаконичный"""
 
     try:
-        message = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
+        raw = await gigachat_complete(
+            system_prompt=prompt,
+            user_text=f"ТЕКСТ ДЛЯ СТРУКТУРИРОВАНИЯ:\n{text}",
             max_tokens=8192,
-            messages=[{"role": "user", "content": f"{prompt}\n\nТЕКСТ ДЛЯ СТРУКТУРИРОВАНИЯ:\n{text}"}],
         )
-        raw = message.content[0].text.strip()
+        raw = raw.strip()
         # Используем тот же парсер что и в structure
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]

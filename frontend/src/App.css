@@ -178,6 +178,18 @@ textarea::placeholder { color: var(--gray-400); }
 .template-file-name { font-weight: 600; color: var(--green-500); }
 .template-file-change { font-size: 12px; color: var(--gray-400); }
 
+/* ─── Diagnosis panel ─── */
+.diag-btn { width: 100%; padding: 12px; background: #1a56db; color: white; border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 600; cursor: pointer; font-family: var(--font); margin: 12px 0; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background 0.2s; }
+.diag-btn:hover { background: #1e40af; }
+.diag-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+.diag-panel { background: #f0f5ff; border: 1px solid #bfdbfe; border-radius: var(--radius-md); padding: 16px; margin: 12px 0; animation: fadeUp 0.3s ease; }
+.diag-header { font-size: 15px; font-weight: 700; color: #1e40af; margin-bottom: 4px; }
+.diag-warn { font-size: 11px; color: #92400e; background: #fef3c7; border-radius: 4px; padding: 6px 10px; margin-bottom: 12px; }
+.diag-section { margin-bottom: 10px; }
+.diag-label { font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 3px; }
+.diag-value { font-size: 13px; color: #1f2937; line-height: 1.5; }
+.diag-code { font-weight: 700; color: #1a56db; font-size: 14px; }
+
 /* ─── Responsive ─── */
 @media (max-width: 480px) {
   body { padding: 12px 8px; }
