@@ -1,6 +1,6 @@
 """
-Писарь v4 — Backend API
-FastAPI + Nexara STT + GigaChat (Сбербанк) + SQLite + Auth
+Писарь v3 — Backend API
+FastAPI + Nexara STT + Anthropic Claude + SQLite + Auth
 """
 
 import os
@@ -12,9 +12,10 @@ import uuid
 import httpx
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from anthropic import Anthropic
 
 app = FastAPI(title="Писарь API", version="3.0.0")
 
@@ -78,67 +79,7 @@ def init_db():
 
 init_db()
 
-# ─── GigaChat API ───
-
-GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-GIGACHAT_API_URL  = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-GIGACHAT_MODEL    = "GigaChat-Max"
-
-_gigachat_token: str = ""
-_gigachat_token_expires: datetime = datetime.min
-
-
-async def get_gigachat_token() -> str:
-    global _gigachat_token, _gigachat_token_expires
-    if _gigachat_token and datetime.utcnow() < _gigachat_token_expires:
-        return _gigachat_token
-    key = os.environ.get("GIGACHAT_API_KEY", "")
-    if not key:
-        raise HTTPException(status_code=500, detail="GIGACHAT_API_KEY не задан. Укажите ключ авторизации GigaChat.")
-    async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
-        resp = await client.post(
-            GIGACHAT_AUTH_URL,
-            headers={
-                "Authorization": f"Basic {key}",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "RqUID": str(uuid.uuid4()),
-            },
-            data={"scope": "GIGACHAT_API_PERS"},
-        )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Ошибка авторизации GigaChat ({resp.status_code}): {resp.text[:200]}")
-    data = resp.json()
-    _gigachat_token = data["access_token"]
-    expires_ms = data.get("expires_at", 0)
-    _gigachat_token_expires = datetime.utcfromtimestamp(expires_ms / 1000) - timedelta(seconds=60)
-    return _gigachat_token
-
-
-async def gigachat_complete(system_prompt: str, user_text: str, max_tokens: int = 8192) -> str:
-    global _gigachat_token
-    token = await get_gigachat_token()
-    payload = {
-        "model": GIGACHAT_MODEL,
-        "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_text},
-        ],
-    }
-    async with httpx.AsyncClient(verify=False, timeout=120.0) as client:
-        resp = await client.post(
-            GIGACHAT_API_URL,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=payload,
-        )
-    if resp.status_code == 401:
-        _gigachat_token = ""
-        return await gigachat_complete(system_prompt, user_text, max_tokens)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Ошибка GigaChat ({resp.status_code}): {resp.text[:200]}")
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
-
+anthropic_client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
@@ -539,16 +480,28 @@ async def structure_text(
     text: str = Form(...),
     specialty: str = Form("psychiatrist"),
 ):
-    """Структурирование текста через GigaChat API."""
+    """Структурирование текста через Claude API."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY не задан")
+
     if specialty not in PROMPTS:
         raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
 
     try:
-        response_text = await gigachat_complete(
-            system_prompt=PROMPTS[specialty],
-            user_text=f'Расшифровка речи врача:\n"{text}"',
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
             max_tokens=8192,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f'{PROMPTS[specialty]}\n\nРасшифровка речи врача:\n"{text}"',
+                }
+            ],
         )
+        response_text = ""
+        for block in message.content:
+            if block.type == "text":
+                response_text += block.text
 
         cleaned = response_text.strip()
         # Убираем markdown обёртки если есть
@@ -622,11 +575,17 @@ async def structure_text(
 
     except json.JSONDecodeError:
         try:
-            fix_text = await gigachat_complete(
-                system_prompt="Ты — JSON-фиксатор. Возвращай ТОЛЬКО валидный JSON, без пояснений и markdown.",
-                user_text=f"Исправь этот JSON и верни ТОЛЬКО валидный JSON:\n\n{response_text[:12000]}",
+            fix_message = anthropic_client.messages.create(
+                model="claude-sonnet-4-20250514",
                 max_tokens=8192,
+                messages=[
+                    {"role": "user", "content": f"Этот JSON невалидный. Исправь его и верни ТОЛЬКО валидный JSON. Никаких пояснений, только JSON:\n\n{response_text[:12000]}"}
+                ],
             )
+            fix_text = ""
+            for block in fix_message.content:
+                if block.type == "text":
+                    fix_text += block.text
             fix_text = fix_text.strip()
             if fix_text.startswith("```"):
                 fix_text = fix_text.split("\n", 1)[-1]
@@ -727,12 +686,12 @@ async def diagnose(
         full_text += f"\n\nИсходная расшифровка приёма:\n{transcript[:2000]}"
 
     try:
-        raw = await gigachat_complete(
-            system_prompt=prompt,
-            user_text=f"ДАННЫЕ ОСМОТРА:\n{full_text}",
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
             max_tokens=4096,
+            messages=[{"role": "user", "content": f"{prompt}\n\nДАННЫЕ ОСМОТРА:\n{full_text}"}],
         )
-        raw = raw.strip()
+        raw = message.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
         if raw.endswith("```"):
@@ -819,12 +778,12 @@ async def structure_by_template(
 - Стиль — профессиональный, лаконичный"""
 
     try:
-        raw = await gigachat_complete(
-            system_prompt=prompt,
-            user_text=f"ТЕКСТ ДЛЯ СТРУКТУРИРОВАНИЯ:\n{text}",
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
             max_tokens=8192,
+            messages=[{"role": "user", "content": f"{prompt}\n\nТЕКСТ ДЛЯ СТРУКТУРИРОВАНИЯ:\n{text}"}],
         )
-        raw = raw.strip()
+        raw = message.content[0].text.strip()
         # Используем тот же парсер что и в structure
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
