@@ -134,7 +134,6 @@ export default function App() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      // Определяем поддерживаемый формат (Safari/iOS не поддерживает webm)
       const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac", "audio/ogg", ""];
       let selectedMime = "";
       for (const mime of mimeTypes) {
@@ -144,12 +143,29 @@ export default function App() {
       const mr = new MediaRecorder(stream, mrOptions);
       const ext = selectedMime.includes("mp4") || selectedMime.includes("aac") ? "m4a" : "webm";
       chunksRef.current = [];
+      let chunkNum = 0;
+
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+
+      // Автоотправка каждые 5 минут (не прерывая запись)
+      const autoSendInterval = setInterval(() => {
+        if (chunksRef.current.length > 0) {
+          const blob = new Blob(chunksRef.current, { type: selectedMime || "audio/webm" });
+          chunksRef.current = [];
+          chunkNum++;
+          sendAudio(blob, `chunk_${chunkNum}.${ext}`, "chunk");
+        }
+      }, 5 * 60 * 1000); // 5 минут
+
       mr.onstop = async () => {
-        const blob = new Blob(chunksRef.current, { type: selectedMime || "audio/webm" });
-        setSavedAudio(blob); setSavedAudioName(`recording.${ext}`);
-        await sendAudio(blob, `recording.${ext}`, "mic");
+        clearInterval(autoSendInterval);
+        if (chunksRef.current.length > 0) {
+          const blob = new Blob(chunksRef.current, { type: selectedMime || "audio/webm" });
+          setSavedAudio(blob); setSavedAudioName(`recording.${ext}`);
+          await sendAudio(blob, `recording_final.${ext}`, "mic");
+        }
       };
+
       mrRef.current = mr; mr.start(1000); setRec(true); setTime(0);
       timerRef.current = setInterval(() => setTime((p) => p + 1), 1000);
     } catch (e) { setErr(e.name === "NotAllowedError" ? "Доступ к микрофону запрещён. Разрешите в настройках браузера." : `Ошибка: ${e.message}`); }
@@ -169,15 +185,30 @@ export default function App() {
   };
 
   const sendAudio = async (blob, filename, src = "mic") => {
-    if (src === "mic") setTranscribing(true); else setUploading(true); setErr("");
+    if (src === "mic") setTranscribing(true);
+    else if (src === "file") setUploading(true);
+    // src === "chunk" — фоновая отправка, не меняем состояние UI
+    if (src !== "chunk") setErr("");
     try {
       const fd = new FormData(); fd.append("audio", blob, filename);
-      const res = await fetch(`${API}/transcribe`, { method: "POST", body: fd });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 мин таймаут
+      const res = await fetch(`${API}/transcribe`, { method: "POST", body: fd, signal: controller.signal });
+      clearTimeout(timeoutId);
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
       const d = await res.json(); setText((prev) => (prev ? prev + " " + d.text : d.text));
-      setSavedAudio(null); setSavedAudioName("");
-    } catch (e) { setErr(`Ошибка распознавания: ${e.message}. Аудио сохранено — нажмите "Повторить".`); }
-    finally { setTranscribing(false); setUploading(false); setUploadName(""); }
+      if (src !== "chunk") { setSavedAudio(null); setSavedAudioName(""); }
+    } catch (e) {
+      if (e.name === "AbortError") {
+        setErr("Превышено время ожидания (10 мин). Попробуйте записать короче или загрузить файл меньшего размера.");
+      } else {
+        setErr(`Ошибка распознавания: ${e.message}. Аудио сохранено — нажмите "Повторить".`);
+      }
+    }
+    finally {
+      if (src === "mic") setTranscribing(false);
+      if (src === "file") { setUploading(false); setUploadName(""); }
+    }
   };
 
   const retryAudio = async () => {

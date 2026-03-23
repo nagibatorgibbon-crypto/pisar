@@ -437,7 +437,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             with open(tmp_path, "rb") as audio_file:
                 response = await client.post(
                     NEXARA_API_URL,
