@@ -82,6 +82,10 @@ export default function App() {
   const [templateFile, setTemplateFile] = useState(null);
   const [diagnosis, setDiagnosis] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
+  const [showDiaryModal, setShowDiaryModal] = useState(false);
+  const [diaryPatientId, setDiaryPatientId] = useState("");
+  const [diarySaving, setDiarySaving] = useState(false);
+  const [diarySaved, setDiarySaved] = useState(false);
 
   const mrRef = useRef(null);
   const chunksRef = useRef([]);
@@ -257,6 +261,22 @@ export default function App() {
       const res = await fetch(`${API}/records`, { method: "POST", body: fd, headers: authHeaders });
       if (res.ok) { setSaved(true); fetchRecords(); }
     } catch (e) { setErr(`Ошибка сохранения: ${e.message}`); }
+  };
+
+  const saveDiaryToPatient = async () => {
+    if (!result || !diaryPatientId) return;
+    setDiarySaving(true); setErr("");
+    try {
+      const fd = new FormData();
+      fd.append("sections", JSON.stringify(result.sections || []));
+      fd.append("transcript", text);
+      fd.append("summary", result.summary || "");
+      const res = await fetch(`${API}/records/${diaryPatientId}/diary`, { method: "PATCH", body: fd, headers: authHeaders });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      setDiarySaved(true); setShowDiaryModal(false); fetchRecords();
+      setTimeout(() => setDiarySaved(false), 3000);
+    } catch (e) { setErr(`Ошибка: ${e.message}`); }
+    finally { setDiarySaving(false); }
   };
 
   const getDiagnosis = async () => {
@@ -474,22 +494,41 @@ export default function App() {
 
             {err && <div className="error">{err}</div>}
             {result && (<div className="result">{renderSections(result, true)}
-              <button onClick={getDiagnosis} disabled={diagLoading} className="diag-btn">
-                {diagLoading ? <><span className="spinner" />Анализирую...</> : "Помощь с диагнозом"}
-              </button>
-              {diagnosis && (
-                <div className="diag-panel">
-                  <div className="diag-header">Предположительный диагноз (ИИ-ассистент)</div>
-                  <div className="diag-warn">Это рекомендация ИИ, а не окончательный диагноз. Решение принимает врач.</div>
-                  <div className="diag-section"><div className="diag-label">Предположительный диагноз</div><div className="diag-value">{diagnosis.diagnosis}</div></div>
-                  <div className="diag-section"><div className="diag-label">Код МКБ-10</div><div className="diag-value diag-code">{diagnosis.icd_code}</div></div>
-                  <div className="diag-section"><div className="diag-label">Обоснование диагноза</div><div className="diag-value">{diagnosis.justification}</div></div>
-                  {diagnosis.differential && <div className="diag-section"><div className="diag-label">Дифференциальный диагноз</div><div className="diag-value">{diagnosis.differential}</div></div>}
-                  <div className="diag-section"><div className="diag-label">Рекомендованное лечение</div><div className="diag-value">{diagnosis.treatment}</div></div>
-                  {diagnosis.examinations && <div className="diag-section"><div className="diag-label">Рекомендуемые обследования</div><div className="diag-value">{diagnosis.examinations}</div></div>}
-                </div>
+              {!isDiary && (
+                <>
+                  <button onClick={getDiagnosis} disabled={diagLoading} className="diag-btn">
+                    {diagLoading ? <><span className="spinner" />Анализирую...</> : "Помощь с диагнозом"}
+                  </button>
+                  {diagnosis && (
+                    <div className="diag-panel">
+                      <div className="diag-header">Предположительный диагноз (ИИ-ассистент)</div>
+                      <div className="diag-warn">Это рекомендация ИИ, а не окончательный диагноз. Решение принимает врач.</div>
+                      <div className="diag-section"><div className="diag-label">Предположительный диагноз</div><div className="diag-value">{diagnosis.diagnosis}</div></div>
+                      <div className="diag-section"><div className="diag-label">Код МКБ-10</div><div className="diag-value diag-code">{diagnosis.icd_code}</div></div>
+                      <div className="diag-section"><div className="diag-label">Обоснование диагноза</div><div className="diag-value">{diagnosis.justification}</div></div>
+                      {diagnosis.differential && <div className="diag-section"><div className="diag-label">Дифференциальный диагноз</div><div className="diag-value">{diagnosis.differential}</div></div>}
+                      <div className="diag-section"><div className="diag-label">Рекомендованное лечение</div><div className="diag-value">{diagnosis.treatment}</div></div>
+                      {diagnosis.examinations && <div className="diag-section"><div className="diag-label">Рекомендуемые обследования</div><div className="diag-value">{diagnosis.examinations}</div></div>}
+                    </div>
+                  )}
+                </>
               )}
-              {!saved ? <button onClick={saveRecord} className="save-btn">Сохранить в историю пациентов</button> : <div className="saved-msg">✓ Сохранено в историю</div>}
+              {isDiary ? (
+                <div className="diary-save-row">
+                  {diarySaved && <div className="saved-msg">✓ Дневник добавлен к пациенту</div>}
+                  {!diarySaved && (
+                    <>
+                      <button onClick={() => { setShowDiaryModal(true); setDiaryPatientId(""); }} className="save-btn">
+                        Сохранить дневник к пациенту
+                      </button>
+                      {!saved && <button onClick={saveRecord} className="save-btn save-btn-new">Сохранить как нового пациента</button>}
+                      {saved && <div className="saved-msg">✓ Сохранено</div>}
+                    </>
+                  )}
+                </div>
+              ) : (
+                !saved ? <button onClick={saveRecord} className="save-btn">Сохранить в историю пациентов</button> : <div className="saved-msg">✓ Сохранено в историю</div>
+              )}
             </div>)}
           </>
         )}
@@ -542,6 +581,41 @@ export default function App() {
         )}
 
         {loadingRecords && <div className="loading-overlay"><span className="spinner" /></div>}
+
+        {showDiaryModal && (
+          <div className="modal-overlay" onClick={() => setShowDiaryModal(false)}>
+            <div className="modal-card" onClick={e => e.stopPropagation()}>
+              <div className="modal-title">Выберите пациента</div>
+              <div className="modal-subtitle">Дневниковая запись будет добавлена к карточке пациента</div>
+              {records.length === 0 ? (
+                <div className="modal-empty">Нет сохранённых пациентов. Сначала создайте карточку через «Первичный осмотр».</div>
+              ) : (
+                <div className="modal-list">
+                  {records.map(r => (
+                    <div
+                      key={r.id}
+                      className={`modal-patient ${diaryPatientId === r.id ? "selected" : ""}`}
+                      onClick={() => setDiaryPatientId(r.id)}
+                    >
+                      <div className="modal-patient-name">{r.patient_name || "Без имени"}</div>
+                      <div className="modal-patient-meta">{r.diagnosis_code && <span className="modal-code">{r.diagnosis_code}</span>}<span>{r.created_at}</span></div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="modal-actions">
+                <button className="modal-cancel" onClick={() => setShowDiaryModal(false)}>Отмена</button>
+                <button
+                  className={`modal-confirm ${!diaryPatientId || diarySaving ? "off" : ""}`}
+                  disabled={!diaryPatientId || diarySaving}
+                  onClick={saveDiaryToPatient}
+                >
+                  {diarySaving ? <><span className="spinner" />Сохраняю...</> : "Сохранить дневник"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
           </>
         )}
       </div>

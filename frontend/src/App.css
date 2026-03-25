@@ -197,3 +197,28 @@ textarea::placeholder { color: var(--gray-400); }
   .chip { font-size: 12px; padding: 9px 6px; }
   .patient-bar { flex-direction: column; gap: 10px; }
 }
+
+/* ─── Diary save row ─── */
+.diary-save-row { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.save-btn-new { background: var(--gray-100); color: var(--gray-700); border: 1px solid var(--gray-300); }
+.save-btn-new:hover { background: var(--gray-200); }
+
+/* ─── Diary patient modal ─── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; animation: fadeUp 0.2s ease; }
+.modal-card { background: white; border-radius: var(--radius-md); padding: 24px; width: 100%; max-width: 420px; max-height: 80vh; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+.modal-title { font-size: 17px; font-weight: 700; color: var(--gray-900); }
+.modal-subtitle { font-size: 13px; color: var(--gray-500); margin-top: -6px; }
+.modal-empty { font-size: 13px; color: var(--gray-500); text-align: center; padding: 20px 0; }
+.modal-list { overflow-y: auto; max-height: 300px; display: flex; flex-direction: column; gap: 6px; }
+.modal-patient { padding: 12px 14px; border: 2px solid var(--gray-200); border-radius: var(--radius-sm); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.modal-patient:hover { border-color: var(--green-400); background: #f0fdf4; }
+.modal-patient.selected { border-color: var(--green-500); background: #f0fdf4; }
+.modal-patient-name { font-size: 14px; font-weight: 600; color: var(--gray-800); }
+.modal-patient-meta { font-size: 12px; color: var(--gray-500); margin-top: 3px; display: flex; gap: 8px; align-items: center; }
+.modal-code { background: #dbeafe; color: #1d4ed8; border-radius: 4px; padding: 1px 6px; font-weight: 600; font-size: 11px; }
+.modal-actions { display: flex; gap: 8px; margin-top: 4px; }
+.modal-cancel { flex: 1; padding: 11px; background: var(--gray-100); color: var(--gray-700); border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 600; cursor: pointer; font-family: var(--font); transition: background 0.15s; }
+.modal-cancel:hover { background: var(--gray-200); }
+.modal-confirm { flex: 2; padding: 11px; background: var(--green-500); color: white; border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 600; cursor: pointer; font-family: var(--font); transition: background 0.15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.modal-confirm:hover:not(.off) { background: var(--green-600); }
+.modal-confirm.off { background: #86efac; cursor: not-allowed; }

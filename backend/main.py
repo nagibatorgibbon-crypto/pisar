@@ -747,7 +747,6 @@ async def structure_by_template(
     template: UploadFile = File(...),
 ):
     """Структурирование по загруженному шаблону документа."""
-    # Читаем шаблон
     template_content = ""
     filename = template.filename or "template.txt"
     content_bytes = await template.read()
@@ -755,7 +754,6 @@ async def structure_by_template(
     if filename.endswith(".txt"):
         template_content = content_bytes.decode("utf-8", errors="ignore")
     elif filename.endswith(".docx") or filename.endswith(".doc"):
-        # Извлекаем текст из docx
         with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
             tmp.write(content_bytes)
             tmp_path = tmp.name
@@ -772,73 +770,134 @@ async def structure_by_template(
     if not template_content.strip():
         raise HTTPException(status_code=400, detail="Не удалось извлечь текст из шаблона")
 
-    # Генерируем промпт на основе шаблона
-    prompt = f"""Ты — опытный врач-психиатр, заполняющий медицинскую документацию.
+    # ── Парсим шаблон в Python: строим скелет секций ──
+    def parse_template_sections(content: str) -> list:
+        """Разбирает шаблон на секции с подсказками по заполнению."""
+        sections = []
+        lines = content.replace("\r\n", "\n").split("\n")
+        current_title = None
+        current_lines = []
 
-Тебе предоставлен ШАБЛОН медицинского документа и ТЕКСТ с данными пациента.
+        HEADER_KEYWORDS = [
+            "статус", "состояние", "назначения", "жалобы",
+            "сведениям", "персонала", "неврологическое",
+            "соматическое", "протокол осмотра", "в дополнение",
+            "по докладу"
+        ]
 
-ШАБЛОН ДОКУМЕНТА:
----
-{template_content[:8000]}
----
+        def flush():
+            if current_title is not None:
+                body = " ".join(l.strip() for l in current_lines if l.strip())
+                sections.append({"title": current_title, "template_hint": body})
 
-КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА — нарушение недопустимо:
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            low = stripped.lower()
+            is_header = (
+                len(stripped) < 100
+                and "нужное выбрать" not in low
+                and "/строка" not in low
+                and not stripped.startswith("-")
+                and any(kw in low for kw in HEADER_KEYWORDS)
+            )
+            if is_header:
+                flush()
+                current_title = stripped.rstrip(":")
+                current_lines = []
+            else:
+                current_lines.append(stripped)
 
-ПРАВИЛО 1 — ТОЛЬКО РАЗДЕЛЫ ИЗ ШАБЛОНА:
-Массив "sections" должен содержать ИСКЛЮЧИТЕЛЬНО разделы, которые есть в шаблоне выше.
-ЗАПРЕЩЕНО создавать разделы: "Образование", "Трудовая деятельность", "Семейное положение", "Правонарушения" и любые другие, которых НЕТ в шаблоне.
-Если раздела нет в шаблоне — его не существует. Точка.
+        flush()
 
-ПРАВИЛО 2 — КАК ЗАПОЛНЯТЬ "(нужное выбрать)":
-Выбери подходящий вариант из перечисленных и напиши ТОЛЬКО его.
-Пример: "Сознание: не помрачено" — не пиши весь список вариантов.
+        # Fallback: если не нашли секции — каждый абзац = секция
+        if not sections:
+            for line in lines:
+                s = line.strip()
+                if s and len(s) > 5:
+                    sections.append({"title": s[:80], "template_hint": s})
+        return sections
 
-ПРАВИЛО 3 — КАК ЗАПОЛНЯТЬ "/строка ручного ввода/":
-Вставь данные из текста пациента если они относятся к этому разделу.
-Если данных нет — пиши "не предъявляет" или "не выявлено".
+    parsed = parse_template_sections(template_content)
 
-ПРАВИЛО 4 — ДАННЫЕ ИЗ ТЕКСТА ПАЦИЕНТА:
-Биографические данные (анамнез жизни) → вставляй в раздел "В дополнение к анамнестическим сведениям".
-Остальные разделы психического статуса заполняй нормативными значениями с пометкой "(уточнить при осмотре)".
+    # Строим скелет JSON
+    skeleton = {"sections": [{"title": s["title"], "content": ""} for s in parsed]}
+    skeleton_json = json.dumps(skeleton, ensure_ascii=False, indent=2)
 
-ПРАВИЛО 5 — ТАБЛИЦА НАЗНАЧЕНИЙ:
-Если в шаблоне есть таблица — включи раздел "Назначения" с пустой таблицей или с данными если они есть в тексте.
+    # Инструкции по каждой секции
+    hints = []
+    for s in parsed:
+        hint = s["template_hint"]
+        low = hint.lower()
+        if "нужное выбрать" in low:
+            opts = re.sub(r'\(нужное выбрать[^)]*\)', '', hint)
+            opts = re.sub(r'/строка[^/]*/', '', opts).strip()[:200]
+            hints.append(f'• {s["title"]}: ВЫБЕРИ из → {opts}')
+        elif "/строка" in low:
+            hints.append(f'• {s["title"]}: вставь данные пациента, или "не предъявляет"')
+        else:
+            hints.append(f'• {s["title"]}: заполни по смыслу из данных пациента')
 
-Формат ответа — СТРОГО JSON (без markdown, без backticks, без комментариев):
-{{
-  "patient_name": "ФИО пациента если упомянуто, иначе пустая строка",
-  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
-  "specialty": "psychiatrist",
-  "sections": [
-    {{
-      "title": "Точное название раздела из шаблона",
-      "content": "Заполненный текст раздела"
-    }}
-  ],
-  "summary": "Краткое резюме осмотра в 1-2 предложения"
-}}"""
+    prompt = f"""Ты — врач-психиатр. Заполни медицинский документ по данным пациента.
+
+ДАННЫЕ ПАЦИЕНТА:
+{text}
+
+КАК ЗАПОЛНЯТЬ КАЖДЫЙ РАЗДЕЛ:
+{chr(10).join(hints)}
+
+ТВОЯ ЗАДАЧА: заполни поле "content" в каждом разделе JSON ниже.
+НЕЛЬЗЯ: добавлять новые разделы, удалять существующие, менять "title".
+МОЖНО: только менять "content".
+ОТВЕТ: только JSON, без пояснений, без markdown, без ```
+
+{skeleton_json}"""
 
     try:
         message = await gigachat_complete(
-            messages=[{"role": "user", "content": f"{prompt}\n\nТЕКСТ ДЛЯ СТРУКТУРИРОВАНИЯ:\n{text}"}],
+            messages=[{"role": "user", "content": prompt}],
             max_tokens=8192,
         )
         raw = message.strip()
-        # Используем тот же парсер что и в structure
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1]
         if raw.endswith("```"):
             raw = raw.rsplit("```", 1)[0]
         raw = raw.strip()
 
-        result = json.loads(raw)
-        return result
+        filled = json.loads(raw)
+        sections_out = filled.get("sections", []) if isinstance(filled, dict) else []
+
+        # Защита: оставляем только секции которые были в скелете
+        skeleton_titles = {s["title"] for s in parsed}
+        sections_out = [s for s in sections_out if s.get("title") in skeleton_titles]
+
+        # Если ИИ вернул меньше секций чем было — добираем из скелета
+        filled_titles = {s["title"] for s in sections_out}
+        for s in parsed:
+            if s["title"] not in filled_titles:
+                sections_out.append({"title": s["title"], "content": "не предъявляет"})
+
+        return {
+            "patient_name": filled.get("patient_name", "") if isinstance(filled, dict) else "",
+            "diagnosis_code": filled.get("diagnosis_code", "") if isinstance(filled, dict) else "",
+            "specialty": "psychiatrist",
+            "sections": sections_out,
+            "summary": filled.get("summary", "") if isinstance(filled, dict) else "",
+        }
     except json.JSONDecodeError:
-        # Попытка извлечь JSON регуляркой
         match = re.search(r'\{[\s\S]*\}', raw)
         if match:
             try:
-                return json.loads(match.group())
+                filled = json.loads(match.group())
+                return {
+                    "patient_name": filled.get("patient_name", ""),
+                    "diagnosis_code": filled.get("diagnosis_code", ""),
+                    "specialty": "psychiatrist",
+                    "sections": filled.get("sections", [{"title": s["title"], "content": "не предъявляет"} for s in parsed]),
+                    "summary": filled.get("summary", ""),
+                }
             except json.JSONDecodeError:
                 pass
         raise HTTPException(status_code=500, detail="Ошибка парсинга ответа. Попробуйте ещё раз.")
@@ -908,6 +967,41 @@ async def delete_record(record_id: str, authorization: str = Header(None)):
     conn.commit()
     conn.close()
     return {"deleted": record_id}
+
+
+@app.patch("/records/{record_id}/diary")
+async def append_diary_entry(
+    record_id: str,
+    sections: str = Form("[]"),
+    transcript: str = Form(""),
+    summary: str = Form(""),
+    authorization: str = Header(None),
+):
+    """Добавить дневниковую запись к существующему пациенту."""
+    user = require_auth(authorization)
+    conn = get_db()
+    row = conn.execute("SELECT * FROM records WHERE id = ? AND user_id = ?", (record_id, user["id"])).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+
+    existing = json.loads(row["sections"])
+    new_entries = json.loads(sections)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    divider = {"title": f"── Дневник {now} ──", "content": "", "isDivider": True}
+    combined = existing + [divider] + new_entries
+
+    new_summary = row["summary"]
+    if summary:
+        new_summary = (row["summary"] or "") + f" | {now}: {summary}"
+
+    conn.execute(
+        "UPDATE records SET sections = ?, summary = ? WHERE id = ? AND user_id = ?",
+        (json.dumps(combined, ensure_ascii=False), new_summary, record_id, user["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "entries_added": len(new_entries)}
 
 
 # ─── Word Export ───
