@@ -233,7 +233,6 @@ export default function App() {
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
       const r = await res.json();
       setResult(r); setView("editor");
-      if (!isDiary) setTimeout(() => getDiagnosis(r), 300);
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
   };
 
@@ -248,7 +247,6 @@ export default function App() {
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
       const r = await res.json();
       setResult(r); setView("editor"); setTemplateFile(null);
-      setTimeout(() => getDiagnosis(r), 300);
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
   };
 
@@ -499,13 +497,12 @@ export default function App() {
 
             {err && <div className="error">{err}</div>}
             {result && (<div className="result">
+              {renderSections(result, true)}
               {!isDiary && (
                 <>
-                  {diagLoading && (
-                    <div className="diag-panel diag-loading">
-                      <span className="spinner" /> Составляю предварительный диагноз...
-                    </div>
-                  )}
+                  <button onClick={() => getDiagnosis()} disabled={diagLoading} className="diag-btn">
+                    {diagLoading ? <><span className="spinner" />Анализирую...</> : "Помощь с диагнозом"}
+                  </button>
                   {diagnosis && (() => {
                     const d = diagnosis;
                     const s = (v) => (v && typeof v === 'object') ? JSON.stringify(v) : (v || '');
@@ -523,13 +520,11 @@ export default function App() {
                       {d.differential && <div className="diag-section"><div className="diag-label">Дифференциальный диагноз</div><div className="diag-value">{s(d.differential)}</div></div>}
                       {d.treatment && <div className="diag-section"><div className="diag-label">Рекомендованное лечение</div><div className="diag-value">{s(d.treatment)}</div></div>}
                       {d.examinations && <div className="diag-section"><div className="diag-label">Рекомендуемые обследования</div><div className="diag-value">{s(d.examinations)}</div></div>}
-                      <button onClick={() => getDiagnosis()} disabled={diagLoading} className="diag-refresh-btn">↻ Пересчитать диагноз</button>
                     </div>
                     );
                   })()}
                 </>
               )}
-              {renderSections(result, true)}
               {isDiary ? (
                 <div className="diary-save-row">
                   {diarySaved && <div className="saved-msg">✓ Дневник добавлен к пациенту</div>}
