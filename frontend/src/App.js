@@ -233,7 +233,7 @@ export default function App() {
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
       const r = await res.json();
       setResult(r); setView("editor");
-      if (!isDiary) getDiagnosis(r);
+      if (!isDiary) setTimeout(() => getDiagnosis(r), 300);
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
   };
 
@@ -248,7 +248,7 @@ export default function App() {
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
       const r = await res.json();
       setResult(r); setView("editor"); setTemplateFile(null);
-      getDiagnosis(r);
+      setTimeout(() => getDiagnosis(r), 300);
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
   };
 
@@ -506,23 +506,27 @@ export default function App() {
                       <span className="spinner" /> Составляю предварительный диагноз...
                     </div>
                   )}
-                  {diagnosis && (
+                  {diagnosis && (() => {
+                    const d = diagnosis;
+                    const s = (v) => (v && typeof v === 'object') ? JSON.stringify(v) : (v || '');
+                    return (
                     <div className="diag-panel">
                       <div className="diag-header-row">
                         <div className="diag-header">Предварительный диагноз</div>
                         <div className="diag-warn-badge">ИИ · не окончательный</div>
                       </div>
                       <div className="diag-main">
-                        <div className="diag-main-code">{diagnosis.icd_code}</div>
-                        <div className="diag-main-name">{diagnosis.diagnosis}</div>
+                        <div className="diag-main-code">{s(d.icd_code)}</div>
+                        <div className="diag-main-name">{s(d.diagnosis)}</div>
                       </div>
-                      <div className="diag-section"><div className="diag-label">Обоснование</div><div className="diag-value">{diagnosis.justification}</div></div>
-                      {diagnosis.differential && <div className="diag-section"><div className="diag-label">Дифференциальный диагноз</div><div className="diag-value">{diagnosis.differential}</div></div>}
-                      <div className="diag-section"><div className="diag-label">Рекомендованное лечение</div><div className="diag-value">{diagnosis.treatment}</div></div>
-                      {diagnosis.examinations && <div className="diag-section"><div className="diag-label">Рекомендуемые обследования</div><div className="diag-value">{diagnosis.examinations}</div></div>}
+                      {d.justification && <div className="diag-section"><div className="diag-label">Обоснование</div><div className="diag-value">{s(d.justification)}</div></div>}
+                      {d.differential && <div className="diag-section"><div className="diag-label">Дифференциальный диагноз</div><div className="diag-value">{s(d.differential)}</div></div>}
+                      {d.treatment && <div className="diag-section"><div className="diag-label">Рекомендованное лечение</div><div className="diag-value">{s(d.treatment)}</div></div>}
+                      {d.examinations && <div className="diag-section"><div className="diag-label">Рекомендуемые обследования</div><div className="diag-value">{s(d.examinations)}</div></div>}
                       <button onClick={() => getDiagnosis()} disabled={diagLoading} className="diag-refresh-btn">↻ Пересчитать диагноз</button>
                     </div>
-                  )}
+                    );
+                  })()}
                 </>
               )}
               {renderSections(result, true)}
