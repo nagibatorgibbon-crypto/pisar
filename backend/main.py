@@ -89,36 +89,52 @@ GIGACHAT_MODEL = os.environ.get("GIGACHAT_MODEL", "GigaChat-Pro")
 
 async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
     """Выполняет запрос к GigaChat API и возвращает текст ответа."""
-    async with httpx.AsyncClient(verify=False) as client:
-        token_resp = await client.post(
-            GIGACHAT_TOKEN_URL,
-            headers={
-                "Authorization": f"Basic {GIGACHAT_AUTH_KEY}",
-                "RqUID": str(uuid.uuid4()),
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data={"scope": "GIGACHAT_API_PERS"},
-            timeout=30.0,
-        )
-        token_resp.raise_for_status()
-        access_token = token_resp.json()["access_token"]
+    auth_key = os.environ.get("GIGACHAT_AUTH_KEY", "")
+    if not auth_key:
+        raise HTTPException(status_code=500, detail="GIGACHAT_AUTH_KEY не задан в переменных окружения")
 
-    async with httpx.AsyncClient(verify=False) as client:
-        resp = await client.post(
-            GIGACHAT_API_URL,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": GIGACHAT_MODEL,
-                "messages": messages,
-                "max_tokens": max_tokens,
-            },
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+    try:
+        async with httpx.AsyncClient(verify=False) as client:
+            token_resp = await client.post(
+                GIGACHAT_TOKEN_URL,
+                headers={
+                    "Authorization": f"Basic {auth_key}",
+                    "RqUID": str(uuid.uuid4()),
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data={"scope": "GIGACHAT_API_PERS"},
+                timeout=30.0,
+            )
+            if token_resp.status_code != 200:
+                raise HTTPException(status_code=503, detail=f"GigaChat авторизация не удалась: {token_resp.status_code} — проверьте GIGACHAT_AUTH_KEY")
+            access_token = token_resp.json()["access_token"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"GigaChat: не удалось получить токен: {str(e)}")
+
+    try:
+        async with httpx.AsyncClient(verify=False) as client:
+            resp = await client.post(
+                GIGACHAT_API_URL,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": GIGACHAT_MODEL,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                },
+                timeout=120.0,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=503, detail=f"GigaChat API ошибка: {resp.status_code} {resp.text[:200]}")
+            return resp.json()["choices"][0]["message"]["content"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"GigaChat: ошибка запроса: {str(e)}")
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
@@ -682,32 +698,52 @@ async def diagnose(
     transcript: str = Form(""),
 ):
     """Помощь с постановкой диагноза на основе данных приёма."""
+    if not os.environ.get("GIGACHAT_AUTH_KEY"):
+        raise HTTPException(status_code=500, detail="GIGACHAT_AUTH_KEY не задан")
+
     sections_data = json.loads(sections) if isinstance(sections, str) else sections
     sections_text = "\n".join([f"{s.get('title','')}: {s.get('content','')}" for s in sections_data if s.get('content') and s['content'] != 'Данные не предоставлены'])
 
-    prompt = """Ты — опытный врач-психиатр, помогаешь коллеге сформулировать предварительный диагноз по МКБ-10.
+    prompt = """Ты — профессор психиатрии с 30-летним опытом. Помогаешь ординатору поставить диагноз по МКБ-10.
 
-ЗАДАЧА: на основе данных осмотра определи наиболее вероятный диагноз.
+МЕТОД ДИАГНОСТИКИ — рассуждай пошагово внутри поля "justification":
 
-ТРЕБОВАНИЯ К ДИАГНОЗУ:
-- Опирайся строго на критерии МКБ-10 и клинические рекомендации Минздрава РФ
-- Выбирай наиболее точный код (с подрубриками: F20.0, F32.1, а не просто F20 или F32)
-- При психотических симптомах (бред, галлюцинации, дезорганизация мышления) — рассматривай F20-F29 в первую очередь
-- При аффективных нарушениях — F30-F39
-- Диагноз формулируй: заболевание + синдром + степень тяжести + тип течения
+ШАГ 1 — СИНДРОМАЛЬНЫЙ АНАЛИЗ:
+Выпиши все выявленные психопатологические симптомы и сгруппируй их по синдромам:
+- Продуктивная симптоматика: бред (содержание, структура), галлюцинации, псевдогаллюцинации
+- Нарушения мышления: темп, структура (разорванность, резонёрство, паралогика, соскальзывание)
+- Аффективные нарушения: настроение, эмоциональные реакции
+- Волевые и поведенческие расстройства
+- Нарушения сознания и ориентировки
+- Критика к состоянию
 
-КРИТИЧЕСКИ ВАЖНО — ФОРМАТ ОТВЕТА:
-Все поля должны быть СТРОКАМИ (не объектами, не массивами, только текст).
-Поле "treatment" — единый текст, НЕ JSON-объект.
-Ответ — СТРОГО JSON без markdown и backticks:
+ШАГ 2 — СОПОСТАВЛЕНИЕ С МКБ-10:
+Для каждого рассматриваемого диагноза проверь соответствие критериям:
+- Какие критерии выполнены
+- Какие критерии не выполнены или не известны
+- Длительность симптомов (если известна)
 
+ШАГ 3 — ДИФФЕРЕНЦИАЛЬНЫЙ ДИАГНОЗ:
+Сравни 2-3 наиболее вероятных диагноза. Аргументируй почему один предпочтительнее.
+
+ШАГ 4 — ВЫВОД:
+Сформулируй окончательный предварительный диагноз.
+
+ПРАВИЛА ВЫБОРА КОДА МКБ-10:
+- F20.0 Параноидная шизофрения: систематизированный бред + нарушения мышления, длительность >1 месяца
+- F23.x Острые психотические расстройства: острое начало (<2 недель), полиморфизм, если длительность неизвестна — предпочти F23
+- F30-F33: при доминировании аффективных нарушений с психозом
+- F10-F19: исключи органику и психоактивные вещества
+- Всегда указывай подрубрику (F20.0, не F20)
+
+ФОРМАТ ОТВЕТА — СТРОГО JSON, все поля только строки, без вложенных объектов:
 {
-  "diagnosis": "Полная формулировка диагноза строкой",
-  "icd_code": "Код МКБ-10 с расшифровкой строкой, например: F20.0 Параноидная шизофрения",
-  "justification": "Обоснование строкой: какие конкретные симптомы соответствуют каким критериям МКБ-10",
-  "differential": "Дифференциальный диагноз строкой: 2-3 альтернативы с кодами и аргументами",
-  "treatment": "Лечение строкой: 1) Фармакотерапия — препарат, доза начальная, доза целевая, длительность. 2) Психотерапия — методы. 3) Мониторинг.",
-  "examinations": "Обследования строкой: что назначить и зачем"
+  "diagnosis": "Полная формулировка: нозология, синдром, степень тяжести, тип течения",
+  "icd_code": "Код с расшифровкой: например F20.0 Параноидная шизофрения, непрерывный тип течения",
+  "justification": "Пошаговое обоснование по шагам 1-4 выше. Подробно, с конкретными цитатами симптомов из данных осмотра.",
+  "differential": "2-3 альтернативных диагноза с кодами МКБ-10. Для каждого: аргументы за и против.",
+  "treatment": "1) Фармакотерапия: препарат первой линии, начальная доза, целевая доза, длительность курса, препарат второй линии. 2) Психотерапия: методы, частота. 3) Режим и мониторинг: что контролировать, как часто.",
+  "examinations": "Обязательные: ОАК, биохимия, ТТГ, ЭЭГ, МРТ головного мозга. Дополнительные по показаниям. Цель каждого обследования."
 }"""
 
     full_text = f"Данные пациента: {patient_name}\n\n{sections_text}"
