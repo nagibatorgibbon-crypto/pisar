@@ -747,99 +747,144 @@ async def structure_by_template(
     template: UploadFile = File(...),
 ):
     """Структурирование по загруженному шаблону документа."""
-    template_content = ""
     filename = template.filename or "template.txt"
     content_bytes = await template.read()
 
-    if filename.endswith(".txt"):
-        template_content = content_bytes.decode("utf-8", errors="ignore")
-    elif filename.endswith(".docx") or filename.endswith(".doc"):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-            tmp.write(content_bytes)
-            tmp_path = tmp.name
-        try:
-            from docx import Document as DocxDocument
-            doc = DocxDocument(tmp_path)
-            paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-            template_content = "\n".join(paragraphs)
-        finally:
-            os.unlink(tmp_path)
-    else:
-        template_content = content_bytes.decode("utf-8", errors="ignore")
+    ADMIN_KEYWORDS = [
+        'зав. отделением', 'фамилия и.о', 'комиссия врачей',
+        'консилиум', 'врачебная комиссия', 'лечащий врач'
+    ]
 
-    if not template_content.strip():
-        raise HTTPException(status_code=400, detail="Не удалось извлечь текст из шаблона")
+    def parse_docx_runs(path: str) -> list:
+        """
+        Читает docx на уровне runs:
+        - Bold run = начало новой секции (заголовок)
+        - Non-bold run / параграф = подсказка к текущей секции
+        Возвращает только медицинские секции (без подписей и оргчастей).
+        """
+        from docx import Document as D
+        doc = D(path)
 
-    # ── Парсим шаблон в Python: строим скелет секций ──
-    def parse_template_sections(content: str) -> list:
-        """Разбирает шаблон на секции с подсказками по заполнению."""
         sections = []
-        lines = content.replace("\r\n", "\n").split("\n")
+        current_title = None
+        current_hints = []
+        bold_buffer = []
+
+        def flush_bold():
+            nonlocal current_title, current_hints, bold_buffer
+            if not bold_buffer:
+                return
+            raw = ' '.join(bold_buffer).strip().strip(':.')
+            bold_buffer = []
+            clean = re.sub(r'/строка[^/]*/', '', raw)
+            clean = re.sub(r'\([^)]*\)', '', clean).strip().strip(':.')
+            if not clean or len(clean) < 4:
+                return
+            if current_title:
+                sections.append({
+                    'title': current_title,
+                    'hint': ' '.join(current_hints)
+                })
+            current_title = clean
+            current_hints = []
+
+        for para in doc.paragraphs:
+            if not para.text.strip():
+                continue
+            for run in para.runs:
+                t = run.text
+                if not t.strip():
+                    continue
+                if run.bold:
+                    bold_buffer.append(t.strip())
+                else:
+                    flush_bold()
+                    ht = t.strip()
+                    if ht and current_title:
+                        current_hints.append(ht)
+
+        flush_bold()
+        if current_title:
+            sections.append({'title': current_title, 'hint': ' '.join(current_hints)})
+
+        # Убираем административные секции (подписи, комиссии)
+        def is_admin(title):
+            tl = title.lower()
+            return any(k in tl for k in ADMIN_KEYWORDS)
+
+        return [s for s in sections if not is_admin(s['title'])]
+
+    def parse_text_fallback(content: str) -> list:
+        """Fallback для .txt файлов — ищет по ключевым словам."""
+        HEADER_KW = [
+            "психический статус", "неврологическое", "соматическое",
+            "назначения", "жалобы", "в дополнение", "по докладу",
+            "протокол осмотра", "сон", "аппетит"
+        ]
+        sections = []
         current_title = None
         current_lines = []
 
-        HEADER_KEYWORDS = [
-            "статус", "состояние", "назначения", "жалобы",
-            "сведениям", "персонала", "неврологическое",
-            "соматическое", "протокол осмотра", "в дополнение",
-            "по докладу"
-        ]
-
         def flush():
-            if current_title is not None:
-                body = " ".join(l.strip() for l in current_lines if l.strip())
-                sections.append({"title": current_title, "template_hint": body})
+            if current_title:
+                sections.append({'title': current_title, 'hint': ' '.join(current_lines)})
 
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
+        for line in content.replace("\r\n", "\n").split("\n"):
+            s = line.strip()
+            if not s:
                 continue
-            low = stripped.lower()
-            is_header = (
-                len(stripped) < 100
-                and "нужное выбрать" not in low
-                and "/строка" not in low
-                and not stripped.startswith("-")
-                and any(kw in low for kw in HEADER_KEYWORDS)
-            )
-            if is_header:
+            low = s.lower()
+            if (len(s) < 120 and "нужное выбрать" not in low
+                    and "/строка" not in low
+                    and any(kw in low for kw in HEADER_KW)):
                 flush()
-                current_title = stripped.rstrip(":")
+                current_title = s.rstrip(":")
                 current_lines = []
             else:
-                current_lines.append(stripped)
-
+                current_lines.append(s)
         flush()
-
-        # Fallback: если не нашли секции — каждый абзац = секция
-        if not sections:
-            for line in lines:
-                s = line.strip()
-                if s and len(s) > 5:
-                    sections.append({"title": s[:80], "template_hint": s})
         return sections
 
-    parsed = parse_template_sections(template_content)
+    # ── Получаем секции ──
+    parsed = []
+    tmp_path = None
+    try:
+        if filename.endswith(".docx") or filename.endswith(".doc"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+                tmp.write(content_bytes)
+                tmp_path = tmp.name
+            parsed = parse_docx_runs(tmp_path)
+        else:
+            content_text = content_bytes.decode("utf-8", errors="ignore")
+            parsed = parse_text_fallback(content_text)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
-    # Строим скелет JSON
+    if not parsed:
+        raise HTTPException(status_code=400,
+                            detail="Не удалось извлечь структуру из шаблона. Проверьте файл.")
+
+    # ── Скелет JSON ──
     skeleton = {"sections": [{"title": s["title"], "content": ""} for s in parsed]}
     skeleton_json = json.dumps(skeleton, ensure_ascii=False, indent=2)
 
-    # Инструкции по каждой секции
+    # ── Инструкции по каждой секции ──
     hints = []
     for s in parsed:
-        hint = s["template_hint"]
+        hint = s["hint"]
         low = hint.lower()
         if "нужное выбрать" in low:
-            opts = re.sub(r'\(нужное выбрать[^)]*\)', '', hint)
-            opts = re.sub(r'/строка[^/]*/', '', opts).strip()[:200]
-            hints.append(f'• {s["title"]}: ВЫБЕРИ из → {opts}')
-        elif "/строка" in low:
-            hints.append(f'• {s["title"]}: вставь данные пациента, или "не предъявляет"')
+            opts = re.sub(r'/строка[^/]*/', '', hint)
+            opts = re.sub(r'\([^)]*\)', lambda m: m.group() if 'нужное' in m.group() else '', opts)
+            opts = re.sub(r'\(нужное выбрать[^)]*\)', '', opts).strip()[:400]
+            hints.append(f'• {s["title"]}: ВЫБЕРИ подходящее из вариантов → {opts}')
+        elif "/строка" in low or len(hint) < 30:
+            hints.append(f'• {s["title"]}: заполни данными пациента, если нет — "не предъявляет"')
         else:
             hints.append(f'• {s["title"]}: заполни по смыслу из данных пациента')
 
-    prompt = f"""Ты — врач-психиатр. Заполни медицинский документ по данным пациента.
+    prompt = f"""Ты — врач-психиатр. Заполни разделы медицинского документа.
 
 ДАННЫЕ ПАЦИЕНТА:
 {text}
@@ -847,10 +892,11 @@ async def structure_by_template(
 КАК ЗАПОЛНЯТЬ КАЖДЫЙ РАЗДЕЛ:
 {chr(10).join(hints)}
 
-ТВОЯ ЗАДАЧА: заполни поле "content" в каждом разделе JSON ниже.
-НЕЛЬЗЯ: добавлять новые разделы, удалять существующие, менять "title".
-МОЖНО: только менять "content".
-ОТВЕТ: только JSON, без пояснений, без markdown, без ```
+СТРОГИЕ ПРАВИЛА:
+1. Заполни ТОЛЬКО поле "content" в каждом разделе
+2. НЕ добавляй новые разделы — их ровно {len(parsed)} штук
+3. НЕ меняй поле "title"
+4. Отвечай ТОЛЬКО JSON, без пояснений, без ```
 
 {skeleton_json}"""
 
@@ -869,15 +915,19 @@ async def structure_by_template(
         filled = json.loads(raw)
         sections_out = filled.get("sections", []) if isinstance(filled, dict) else []
 
-        # Защита: оставляем только секции которые были в скелете
+        # Фильтр: только секции из скелета
         skeleton_titles = {s["title"] for s in parsed}
         sections_out = [s for s in sections_out if s.get("title") in skeleton_titles]
 
-        # Если ИИ вернул меньше секций чем было — добираем из скелета
+        # Добираем пропущенные
         filled_titles = {s["title"] for s in sections_out}
         for s in parsed:
             if s["title"] not in filled_titles:
                 sections_out.append({"title": s["title"], "content": "не предъявляет"})
+
+        # Восстанавливаем порядок
+        order = {s["title"]: i for i, s in enumerate(parsed)}
+        sections_out.sort(key=lambda s: order.get(s["title"], 999))
 
         return {
             "patient_name": filled.get("patient_name", "") if isinstance(filled, dict) else "",
@@ -886,6 +936,7 @@ async def structure_by_template(
             "sections": sections_out,
             "summary": filled.get("summary", "") if isinstance(filled, dict) else "",
         }
+
     except json.JSONDecodeError:
         match = re.search(r'\{[\s\S]*\}', raw)
         if match:
@@ -905,7 +956,40 @@ async def structure_by_template(
         raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
 
 
-# ─── Patient Records API ───
+        for s in parsed:
+            if s["title"] not in filled_titles:
+                sections_out.append({"title": s["title"], "content": "не предъявляет"})
+
+        # Восстанавливаем порядок как в шаблоне
+        order = {s["title"]: i for i, s in enumerate(parsed)}
+        sections_out.sort(key=lambda s: order.get(s["title"], 999))
+
+        return {
+            "patient_name": filled.get("patient_name", "") if isinstance(filled, dict) else "",
+            "diagnosis_code": filled.get("diagnosis_code", "") if isinstance(filled, dict) else "",
+            "specialty": "psychiatrist",
+            "sections": sections_out,
+            "summary": filled.get("summary", "") if isinstance(filled, dict) else "",
+        }
+
+    except json.JSONDecodeError:
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            try:
+                filled = json.loads(match.group())
+                return {
+                    "patient_name": filled.get("patient_name", ""),
+                    "diagnosis_code": filled.get("diagnosis_code", ""),
+                    "specialty": "psychiatrist",
+                    "sections": filled.get("sections", [{"title": s["title"], "content": "не предъявляет"} for s in parsed]),
+                    "summary": filled.get("summary", ""),
+                }
+            except json.JSONDecodeError:
+                pass
+        raise HTTPException(status_code=500, detail="Ошибка парсинга ответа. Попробуйте ещё раз.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
+
 
 @app.post("/records")
 async def save_record(
