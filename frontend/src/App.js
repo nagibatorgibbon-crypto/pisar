@@ -231,7 +231,9 @@ export default function App() {
       const fd = new FormData(); fd.append("text", sendText); fd.append("specialty", customSpecialty || getSpecKey());
       const res = await fetch(`${API}/structure`, { method: "POST", body: fd });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
-      setResult(await res.json()); setView("editor");
+      const r = await res.json();
+      setResult(r); setView("editor");
+      if (!isDiary) getDiagnosis(r);
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
   };
 
@@ -244,7 +246,9 @@ export default function App() {
       fd.append("template", templateFile);
       const res = await fetch(`${API}/structure-template`, { method: "POST", body: fd });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
-      setResult(await res.json()); setView("editor"); setTemplateFile(null);
+      const r = await res.json();
+      setResult(r); setView("editor"); setTemplateFile(null);
+      getDiagnosis(r);
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
   };
 
@@ -279,15 +283,16 @@ export default function App() {
     finally { setDiarySaving(false); }
   };
 
-  const getDiagnosis = async () => {
-    if (!result) return;
+  const getDiagnosis = async (resultData) => {
+    const r = resultData || result;
+    if (!r) return;
     setDiagLoading(true); setDiagnosis(null); setErr("");
     try {
       const fd = new FormData();
-      fd.append("sections", JSON.stringify(result.sections || []));
-      fd.append("patient_name", result.patient_name || "");
+      fd.append("sections", JSON.stringify(r.sections || []));
+      fd.append("patient_name", r.patient_name || "");
       fd.append("transcript", text);
-      const res = await fetch(`${API}/diagnose`, { method: "POST", body: fd });
+      const res = await fetch(`${API}/diagnose`, { method: "POST", body: fd, headers: authHeaders });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
       setDiagnosis(await res.json());
     } catch (e) { setErr(`Ошибка диагностики: ${e.message}`); }
@@ -493,26 +498,34 @@ export default function App() {
             )}
 
             {err && <div className="error">{err}</div>}
-            {result && (<div className="result">{renderSections(result, true)}
+            {result && (<div className="result">
               {!isDiary && (
                 <>
-                  <button onClick={getDiagnosis} disabled={diagLoading} className="diag-btn">
-                    {diagLoading ? <><span className="spinner" />Анализирую...</> : "Помощь с диагнозом"}
-                  </button>
+                  {diagLoading && (
+                    <div className="diag-panel diag-loading">
+                      <span className="spinner" /> Составляю предварительный диагноз...
+                    </div>
+                  )}
                   {diagnosis && (
                     <div className="diag-panel">
-                      <div className="diag-header">Предположительный диагноз (ИИ-ассистент)</div>
-                      <div className="diag-warn">Это рекомендация ИИ, а не окончательный диагноз. Решение принимает врач.</div>
-                      <div className="diag-section"><div className="diag-label">Предположительный диагноз</div><div className="diag-value">{diagnosis.diagnosis}</div></div>
-                      <div className="diag-section"><div className="diag-label">Код МКБ-10</div><div className="diag-value diag-code">{diagnosis.icd_code}</div></div>
-                      <div className="diag-section"><div className="diag-label">Обоснование диагноза</div><div className="diag-value">{diagnosis.justification}</div></div>
+                      <div className="diag-header-row">
+                        <div className="diag-header">Предварительный диагноз</div>
+                        <div className="diag-warn-badge">ИИ · не окончательный</div>
+                      </div>
+                      <div className="diag-main">
+                        <div className="diag-main-code">{diagnosis.icd_code}</div>
+                        <div className="diag-main-name">{diagnosis.diagnosis}</div>
+                      </div>
+                      <div className="diag-section"><div className="diag-label">Обоснование</div><div className="diag-value">{diagnosis.justification}</div></div>
                       {diagnosis.differential && <div className="diag-section"><div className="diag-label">Дифференциальный диагноз</div><div className="diag-value">{diagnosis.differential}</div></div>}
                       <div className="diag-section"><div className="diag-label">Рекомендованное лечение</div><div className="diag-value">{diagnosis.treatment}</div></div>
                       {diagnosis.examinations && <div className="diag-section"><div className="diag-label">Рекомендуемые обследования</div><div className="diag-value">{diagnosis.examinations}</div></div>}
+                      <button onClick={() => getDiagnosis()} disabled={diagLoading} className="diag-refresh-btn">↻ Пересчитать диагноз</button>
                     </div>
                   )}
                 </>
               )}
+              {renderSections(result, true)}
               {isDiary ? (
                 <div className="diary-save-row">
                   {diarySaved && <div className="saved-msg">✓ Дневник добавлен к пациенту</div>}
