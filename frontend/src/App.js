@@ -100,6 +100,16 @@ export default function App() {
   const DIARY_PERIODS = { "1week": "1 неделя", "2weeks": "2 недели", "1month": "1 месяц" };
   const authHeaders = { "Authorization": `Bearer ${token}` };
 
+  // Безопасное чтение ошибки — если сервер вернул не JSON (например "Service Unavailable")
+  const getErrMsg = async (res) => {
+    try {
+      const d = await res.json();
+      return d.detail || d.message || `Ошибка ${res.status}`;
+    } catch {
+      return `Ошибка сервера ${res.status} — попробуйте ещё раз`;
+    }
+  };
+
   // ─── Auth functions ───
   const doAuth = async (endpoint) => {
     setAuthErr(""); setAuthLoading(true);
@@ -109,7 +119,7 @@ export default function App() {
       fd.append("password", authPass);
       if (endpoint === "/auth/register") fd.append("name", authName || authLogin);
       const res = await fetch(`${API}${endpoint}`, { method: "POST", body: fd });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      if (!res.ok) { throw new Error(await getErrMsg(res)); }
       const data = await res.json();
       setToken(data.token); setUser(data.user);
       localStorage.setItem("pisar_token", data.token);
@@ -199,7 +209,7 @@ export default function App() {
       const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 мин таймаут
       const res = await fetch(`${API}/transcribe`, { method: "POST", body: fd, signal: controller.signal });
       clearTimeout(timeoutId);
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      if (!res.ok) { throw new Error(await getErrMsg(res)); }
       const d = await res.json(); setText((prev) => (prev ? prev + " " + d.text : d.text));
       if (src !== "chunk") { setSavedAudio(null); setSavedAudioName(""); }
     } catch (e) {
@@ -230,7 +240,7 @@ export default function App() {
       }
       const fd = new FormData(); fd.append("text", sendText); fd.append("specialty", customSpecialty || getSpecKey());
       const res = await fetch(`${API}/structure`, { method: "POST", body: fd });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      if (!res.ok) { throw new Error(await getErrMsg(res)); }
       const r = await res.json();
       setResult(r); setView("editor");
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
@@ -244,7 +254,7 @@ export default function App() {
       fd.append("text", text.trim());
       fd.append("template", templateFile);
       const res = await fetch(`${API}/structure-template`, { method: "POST", body: fd });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      if (!res.ok) { throw new Error(await getErrMsg(res)); }
       const r = await res.json();
       setResult(r); setView("editor"); setTemplateFile(null);
     } catch (e) { setErr(`Ошибка: ${e.message}`); } finally { setLoading(false); }
@@ -274,7 +284,7 @@ export default function App() {
       fd.append("transcript", text);
       fd.append("summary", result.summary || "");
       const res = await fetch(`${API}/records/${diaryPatientId}/diary`, { method: "PATCH", body: fd, headers: authHeaders });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      if (!res.ok) { throw new Error(await getErrMsg(res)); }
       setDiarySaved(true); setShowDiaryModal(false); fetchRecords();
       setTimeout(() => setDiarySaved(false), 3000);
     } catch (e) { setErr(`Ошибка: ${e.message}`); }
@@ -291,7 +301,7 @@ export default function App() {
       fd.append("patient_name", r.patient_name || "");
       fd.append("transcript", text);
       const res = await fetch(`${API}/diagnose`, { method: "POST", body: fd, headers: authHeaders });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      if (!res.ok) { throw new Error(await getErrMsg(res)); }
       setDiagnosis(await res.json());
     } catch (e) { setErr(`Ошибка диагностики: ${e.message}`); }
     finally { setDiagLoading(false); }
