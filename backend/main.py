@@ -100,12 +100,9 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
             "max_tokens": max_tokens,
             "messages": messages,
         }).encode("utf-8")
-        req = urllib.request.Request(
-            OPENROUTER_URL,
-            data=body,
-            method="POST",
-        )
-        req.add_header("Authorization", f"Bearer {api_key}")
+        # Передаём ключ через query parameter — Railway срезает Authorization header
+        url = f"{OPENROUTER_URL}?api_key={api_key}"
+        req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         req.add_header("HTTP-Referer", "https://pisar-production.up.railway.app")
         req.add_header("X-Title", "Pisar")
