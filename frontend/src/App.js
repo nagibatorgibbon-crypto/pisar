@@ -223,7 +223,6 @@ export default function App() {
         const count = Math.max(1, Math.round(days / 3));
         sendText = `Период ведения дневника: с ${from} по ${to} включительно.\nКоличество записей: ${count} (одна запись каждые 3 дня).\nДаты записей: равномерно распределить ${count} записей между ${from} и ${to}, через каждые 3 дня.\n\n${t}`;
       }
-      }
       const fd = new FormData(); fd.append("text", sendText); fd.append("specialty", customSpecialty || getSpecKey());
       const res = await fetch(`${API}/structure`, { method: "POST", body: fd });
       if (!res.ok) { throw new Error(await getErrMsg(res)); }
