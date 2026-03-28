@@ -599,9 +599,6 @@ async def structure_text(
     specialty: str = Form("psychiatrist"),
 ):
     """Структурирование текста через GigaChat API."""
-    if not os.environ.get("GIGACHAT_AUTH_KEY"):
-        raise HTTPException(status_code=500, detail="GIGACHAT_AUTH_KEY не задан")
-
     if specialty not in PROMPTS:
         # Fallback: неизвестная специальность — используем психиатра ПНД
         specialty = "psychiatrist"
@@ -762,9 +759,6 @@ async def diagnose(
     transcript: str = Form(""),
 ):
     """Помощь с постановкой диагноза на основе данных приёма."""
-    if not os.environ.get("GIGACHAT_AUTH_KEY"):
-        raise HTTPException(status_code=500, detail="GIGACHAT_AUTH_KEY не задан")
-
     sections_data = json.loads(sections) if isinstance(sections, str) else sections
     sections_text = "\n".join([f"{s.get('title','')}: {s.get('content','')}" for s in sections_data if s.get('content') and s['content'] != 'Данные не предоставлены'])
 
