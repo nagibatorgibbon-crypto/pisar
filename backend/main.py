@@ -90,6 +90,8 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан в переменных окружения")
+    # Debug: показываем первые 8 символов ключа
+    key_preview = api_key[:8] + "..." if len(api_key) > 8 else "слишком короткий"
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -108,7 +110,7 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
                 timeout=120.0,
             )
             if resp.status_code != 200:
-                raise HTTPException(status_code=503, detail=f"OpenRouter API ошибка: {resp.status_code} {resp.text[:300]}")
+                raise HTTPException(status_code=503, detail=f"OpenRouter API ошибка: {resp.status_code} (ключ: {key_preview}) {resp.text[:300]}")
             return resp.json()["choices"][0]["message"]["content"]
     except HTTPException:
         raise
