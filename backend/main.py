@@ -17,7 +17,6 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 import warnings
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
-from anthropic import Anthropic
 
 app = FastAPI(title="Писарь API", version="3.0.0")
 
@@ -70,34 +69,51 @@ def init_db():
             created_at TEXT DEFAULT ''
         )
     """)
-    # Миграция: добавить user_id если его нет (для старых баз)
     try:
         conn.execute("ALTER TABLE records ADD COLUMN user_id TEXT DEFAULT ''")
     except Exception:
-        pass  # Колонка уже существует
+        pass
     conn.commit()
     conn.close()
 
 
 init_db()
 
-# Anthropic API
-anthropic_client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+# OpenRouter API
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4-5")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
-    """Выполняет запрос к Anthropic Claude API и возвращает текст ответа."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY не задан в переменных окружения")
+    """Выполняет запрос через OpenRouter API и возвращает текст ответа."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан в переменных окружения")
     try:
-        message = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=max_tokens,
-            messages=messages,
-        )
-        return message.content[0].text
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://pisar-production.up.railway.app",
+                    "X-Title": "Писарь",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "max_tokens": max_tokens,
+                    "messages": messages,
+                },
+                timeout=120.0,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=503, detail=f"OpenRouter API ошибка: {resp.status_code} {resp.text[:300]}")
+            return resp.json()["choices"][0]["message"]["content"]
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Anthropic API ошибка: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"OpenRouter ошибка: {str(e)}")
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
