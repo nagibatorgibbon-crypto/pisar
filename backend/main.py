@@ -81,58 +81,38 @@ init_db()
 
 # OpenRouter API
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4-5")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "anthropic/claude-sonnet-4"
 
 
 async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
-    """Выполняет запрос через OpenRouter API и возвращает текст ответа."""
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip().strip('"').strip("'")
+    """Выполняет запрос к Claude через OpenRouter API."""
+    api_key = OPENROUTER_API_KEY or os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан в переменных окружения")
-    key_preview = api_key[:12] + "..." if len(api_key) > 12 else f"длина={len(api_key)}"
     try:
-        import http.client
-        import ssl
-        import asyncio
-
-        body = json.dumps({
-            "model": OPENROUTER_MODEL,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        }).encode("utf-8")
-
-        def _sync_request():
-            ctx = ssl.create_default_context()
-            conn = http.client.HTTPSConnection("openrouter.ai", 443, context=ctx, timeout=120)
-            conn.request(
-                "POST",
-                "/api/v1/chat/completions",
-                body=body,
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://pisar-production.up.railway.app",
-                    "X-Title": "Pisar",
-                    "User-Agent": "python-http-client/3.0",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "max_tokens": max_tokens,
+                    "messages": messages,
                 },
             )
-            resp = conn.getresponse()
-            data = resp.read().decode("utf-8")
-            conn.close()
-            return resp.status, data
 
-        status, data = await asyncio.get_event_loop().run_in_executor(None, _sync_request)
+        if response.status_code != 200:
+            raise HTTPException(status_code=503, detail=f"OpenRouter {response.status_code}: {response.text[:300]}")
 
-        if status != 200:
-            raise HTTPException(status_code=503, detail=f"OpenRouter {status}: {data[:300]}")
-
-        result = json.loads(data)
+        result = response.json()
         return result["choices"][0]["message"]["content"]
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"OpenRouter ошибка (ключ {key_preview}): {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Ошибка OpenRouter: {str(e)}")
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
@@ -768,7 +748,7 @@ async def structure_text(
         except Exception as fix_err:
             raise HTTPException(status_code=500, detail="Ошибка парсинга ответа. Попробуйте ещё раз.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка GigaChat: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка Claude: {str(e)}")
 
 
 @app.post("/process")
