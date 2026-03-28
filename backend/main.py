@@ -17,6 +17,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 import warnings
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+from anthropic import Anthropic
 
 app = FastAPI(title="Писарь API", version="3.0.0")
 
@@ -26,7 +27,7 @@ from fastapi.responses import FileResponse
 import pathlib
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
-DB_PATH = pathlib.Path(__file__).parent / "pisar.db"
+DB_PATH = pathlib.Path(os.environ.get("DATA_DIR", str(pathlib.Path(__file__).parent))) / "pisar.db"
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,61 +81,23 @@ def init_db():
 
 init_db()
 
-# GigaChat API
-GIGACHAT_AUTH_KEY = os.environ.get("GIGACHAT_AUTH_KEY", "")
-GIGACHAT_TOKEN_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-GIGACHAT_MODEL = os.environ.get("GIGACHAT_MODEL", "GigaChat-Pro")
+# Anthropic API
+anthropic_client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
 
 async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
-    """Выполняет запрос к GigaChat API и возвращает текст ответа."""
-    auth_key = os.environ.get("GIGACHAT_AUTH_KEY", "")
-    if not auth_key:
-        raise HTTPException(status_code=500, detail="GIGACHAT_AUTH_KEY не задан в переменных окружения")
-
+    """Выполняет запрос к Anthropic Claude API и возвращает текст ответа."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY не задан в переменных окружения")
     try:
-        async with httpx.AsyncClient(verify=False) as client:
-            token_resp = await client.post(
-                GIGACHAT_TOKEN_URL,
-                headers={
-                    "Authorization": f"Basic {auth_key}",
-                    "RqUID": str(uuid.uuid4()),
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-                data={"scope": "GIGACHAT_API_PERS"},
-                timeout=30.0,
-            )
-            if token_resp.status_code != 200:
-                raise HTTPException(status_code=503, detail=f"GigaChat авторизация не удалась: {token_resp.status_code} — проверьте GIGACHAT_AUTH_KEY")
-            access_token = token_resp.json()["access_token"]
-    except HTTPException:
-        raise
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=max_tokens,
+            messages=messages,
+        )
+        return message.content[0].text
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"GigaChat: не удалось получить токен: {str(e)}")
-
-    try:
-        async with httpx.AsyncClient(verify=False) as client:
-            resp = await client.post(
-                GIGACHAT_API_URL,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": GIGACHAT_MODEL,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                },
-                timeout=120.0,
-            )
-            if resp.status_code != 200:
-                raise HTTPException(status_code=503, detail=f"GigaChat API ошибка: {resp.status_code} {resp.text[:200]}")
-            return resp.json()["choices"][0]["message"]["content"]
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"GigaChat: ошибка запроса: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Anthropic API ошибка: {str(e)}")
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
@@ -368,6 +331,106 @@ PROMPTS = {
 - Опирайся на диагноз, терапию и анамнез пациента
 - Пиши на русском языке""",
 
+    "psychiatrist_pnd": """Ты — ИИ-ассистент психиатра психоневрологического диспансера (ПНД). Структурируй расшифровку речи врача в документ осмотра ПНД.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента если упомянута",
+  "date": "Дата приёма если упомянута",
+  "specialty": "Психиатр ПНД",
+  "diagnosis_code": "Код МКБ-10 если определён",
+  "sections": [
+    {"title": "Жалобы", "content": "Жалобы пациента в кавычках"},
+    {"title": "Анамнез жизни", "content": "Краткие анамнестические данные"},
+    {"title": "Анамнез заболевания", "content": "История психического расстройства, госпитализации, терапия"},
+    {"title": "Психическое состояние", "content": "Сознание, ориентировка, контакт, речь, мышление, галлюцинации, аффект, критика"},
+    {"title": "Соматический статус", "content": "Краткое описание"},
+    {"title": "Неврологический статус", "content": "Краткое описание"},
+    {"title": "Диагноз", "content": "Основной диагноз с кодом МКБ-10"},
+    {"title": "Назначения", "content": "Препараты, дозировки, рекомендации"}
+  ],
+  "summary": "Краткое резюме"
+}
+
+Правила: профессиональный стиль ПНД, жалобы в кавычках, заполняй только на основе данных врача.""",
+
+    "psychiatrist_pnd_diary": """Ты — ИИ-ассистент психиатра ПНД. Составь серию дневниковых записей наблюдения пациента ПНД.
+
+В тексте будет указан период: дата начала и дата окончания. Создай записи через каждые 2-4 дня на весь указанный период.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента если упомянута",
+  "date": "",
+  "specialty": "Психиатр ПНД (дневник)",
+  "diagnosis_code": "Код МКБ-10",
+  "sections": [
+    {"title": "ДД.ММ.ГГГГ", "content": "Краткая запись 2-5 предложений: жалобы, сон, аппетит, настроение, динамика."},
+    {"title": "ДД.ММ.ГГГГ", "content": "Следующая запись с динамикой..."}
+  ],
+  "summary": "Общая динамика за период"
+}
+
+Правила: записи краткие (2-5 предложений), показывай реалистичную динамику, используй точные даты из указанного периода.""",
+
+    "psychiatrist_stac_exam": """Ты — ИИ-ассистент врача-психиатра психиатрического стационара. Структурируй расшифровку речи врача в документ первичного осмотра стационарного пациента.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "ФИО пациента если упомянуто",
+  "date": "Дата поступления если упомянута",
+  "specialty": "Психиатр стационара",
+  "diagnosis_code": "Код МКБ-10 если определён",
+  "sections": [
+    {"title": "Жалобы", "content": "Жалобы пациента"},
+    {"title": "Анамнез жизни", "content": "Место рождения, семья, образование, работа, семейное положение, жилищные условия, судимости, водительские права, оружие"},
+    {"title": "Страховой анамнез", "content": "Работает/не работает, листок нетрудоспособности, ЦЗН, инвалидность"},
+    {"title": "Сопутствующие заболевания", "content": "ЧМТ, операции, судорожные припадки, хронические болезни, постоянные препараты"},
+    {"title": "Эпиданамнез", "content": "Выезды за рубеж, контакты с инфекционными больными, COVID, туберкулёз, гепатиты, ВИЧ"},
+    {"title": "Наркологический анамнез", "content": "Курение, алкоголь, наркотики, наблюдение у нарколога"},
+    {"title": "Аллергологический анамнез", "content": "Аллергии, непереносимость препаратов"},
+    {"title": "Анамнез заболевания", "content": "Наследственность, дебют расстройства, течение, госпитализации, терапия, текущая причина госпитализации"},
+    {"title": "Психическое состояние при осмотре врачом приёмного отделения", "content": "Сознание, ориентировка, внешний вид, зрительный контакт, речь, продуктивная симптоматика, настроение, мышление, поведение, суицидальные мысли, критика"},
+    {"title": "Физикальное исследование", "content": "Тяжесть состояния, шкала Глазго, кожные покровы, слизистые, лимфоузлы, лёгкие, сердце, живот, ЧСС, АД, температура, рост, вес"},
+    {"title": "Локальный (психический) статус", "content": "Развёрнутое описание психического статуса при осмотре лечащим врачом отделения"},
+    {"title": "Предварительный диагноз", "content": "Основное заболевание, осложнения, сопутствующие заболевания — с кодами МКБ-10"},
+    {"title": "Обоснование диагноза", "content": "Обоснование на основе анамнеза, симптоматики, динамики"},
+    {"title": "Обоснование стационарного лечения", "content": "Показания к госпитализации"},
+    {"title": "Назначения", "content": "Препараты с дозировками, способ введения, кратность"},
+    {"title": "Шкала падений Hendrich II", "content": "Оценка риска падений по параметрам шкалы"},
+    {"title": "Карта обучения пациента", "content": "Информированность, образовательный уровень, потребность в обучении"}
+  ],
+  "summary": "Краткое резюме поступления"
+}
+
+Правила: профессиональный стиль стационарной документации, заполняй только из данных врача, нет данных — «не предоставлено».""",
+
+    "psychiatrist_stac_diary": """Ты — ИИ-ассистент врача-психиатра психиатрического стационара. Составь серию ежедневных дневниковых записей наблюдения стационарного пациента.
+
+В тексте будет указан период: дата начала и дата окончания. Создай запись на КАЖДЫЙ день (или через день) на весь период.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента",
+  "date": "",
+  "specialty": "Психиатр стационара (дневник)",
+  "diagnosis_code": "Код МКБ-10",
+  "sections": [
+    {
+      "title": "ДД.ММ.ГГГГ",
+      "content": "По докладу медперсонала: [поведение в отделении]. Жалобы: [жалобы или не предъявляет]. Психический статус: Сознание не помрачено. Ориентирован верно. [Описание состояния: поведение, контакт, мышление, аффект, сон, аппетит, динамика на фоне терапии]. Критика [присутствует/снижена]. Соматически без ухудшений. Назначения: [текущая терапия]."
+    }
+  ],
+  "summary": "Динамика за период"
+}
+
+Правила:
+- Каждая запись строго по структуре стационарного дневника
+- Показывай динамику на фоне терапии (улучшение, ухудшение, стабилизация)
+- Указывай конкретные даты из периода
+- Упоминай текущую терапию и её эффекты
+- Стиль — краткий, клинический, от третьего лица""",
+
     "therapist": """Ты — ИИ-ассистент терапевта. Получив расшифровку речи врача, структурируй её в полноценный медицинский документ терапевтического приёма.
 
 Формат ответа — СТРОГО JSON (без markdown, без backticks):
@@ -540,7 +603,8 @@ async def structure_text(
         raise HTTPException(status_code=500, detail="GIGACHAT_AUTH_KEY не задан")
 
     if specialty not in PROMPTS:
-        raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
+        # Fallback: неизвестная специальность — используем психиатра ПНД
+        specialty = "psychiatrist"
 
     try:
         response_text = await gigachat_complete(

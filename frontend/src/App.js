@@ -3,11 +3,18 @@ import "./App.css";
 
 const API = process.env.REACT_APP_API_URL || (window.location.hostname === "localhost" ? "http://localhost:8000" : "");
 
-const SPECS = { psychiatrist: { label: "Психиатр" }, therapist: { label: "Терапевт" }, pediatrician: { label: "Педиатр" } };
+const SPECS = {
+  psychiatrist:       { label: "Психиатр ПНД",       hasDiary: true,  diaryKey: "psychiatrist_pnd_diary" },
+  psychiatrist_stac:  { label: "Психиатр стационара", hasDiary: true,  diaryKey: "psychiatrist_stac_diary" },
+  therapist:          { label: "Терапевт",             hasDiary: false },
+  pediatrician:       { label: "Педиатр",              hasDiary: false },
+};
 
 const DEMOS = {
   psychiatrist: `Пациент Иванов Сергей Петрович, 42 года, обратился самостоятельно. Жалобы на сниженное настроение в течение последних трёх месяцев, нарушения сна, снижение аппетита, потерю интереса. Отмечает трудности концентрации, чувство вины. Суицидальные мысли отрицает. Анамнез: первый эпизод два года назад после развода. Текущий эпизод связывает с увольнением. Наследственность: мать — депрессия. Курит 10 сигарет/день. Алкоголь умеренно. Психический статус: сознание ясное, ориентирован верно. Настроение сниженное, мышление замедленное, идеи самообвинения. Галлюцинаций нет. Критика сохранена. АД 130/85, пульс 72. Диагноз: F33.1 рекуррентное депрессивное расстройство, средней степени. Назначения: сертралин 50 мг утром, миртазапин 15 мг на ночь. КПТ 1 раз/нед. Повтор через 2 недели.`,
-  psychiatrist_diary: `Пациент Воронович, 25 лет. Диагноз: F32.1 Депрессивный эпизод средней степени. Терапия: сертралин 100 мг утром, кветиапин 25 мг на ночь.\n\nАнамнез: Рос замкнутым ребёнком, в школе подвергался издевательствам из-за лишнего веса. Работает удалённо программистом. Не женат, в отношениях. Жалобы при поступлении: отсутствие настроения и эмоций, нарушения сна, фантазии о причинении вреда себе и окружающим. Курит 1 пачку в день.\n\nТекущее состояние: На фоне терапии отмечает улучшение сна, засыпает легче. Сохраняется некоторая сонливость днём. Фантазии стали менее навязчивыми. Аппетит нестабильный. Настроение ровное, без выраженных колебаний.`,
+  psychiatrist_stac: `Пациентка Смирнова Ольга Фанасьевна, 44 года, доставлена бригадой СМП в сопровождении соседей. Со слов соседей: в течение 2 недель ведёт себя неадекватно, не спит ночами, кричит, называет себя известными именами. Анамнез жизни: уроженка г. Тобольска, образование среднее, работала оператором на заводе, в данный момент не работает, живёт одна. Анамнез заболевания: наблюдается у психиатра с 2019 года, диагноз F20.0, неоднократные госпитализации. Последняя выписка 6 месяцев назад на галоперидоле 5 мг. Терапию принимала нерегулярно, 3 недели назад самостоятельно прекратила. Психический статус: возбуждена, дурашлива, называет себя дочерью Григория Распутина, высказывает идеи особого происхождения и родства с историческими личностями, мышление разорванное, обманы восприятия отрицает, критика отсутствует. АД 125/80, пульс 88.`,
+  psychiatrist_pnd_diary: `Пациент Воронович, 25 лет. Диагноз: F32.1 Депрессивный эпизод средней степени. Терапия: сертралин 100 мг утром, кветиапин 25 мг на ночь. Анамнез: работает программистом удалённо, не женат. Жалобы при поступлении: отсутствие настроения, нарушения сна. Текущее состояние: на фоне терапии сон улучшился, сохраняется эмоциональное уплощение, тревожность снизилась.`,
+  psychiatrist_stac_diary: `Пациентка Смирнова О.Ф., 44 года. Диагноз: F20.0 Параноидная шизофрения, непрерывный тип течения, параноидный синдром. Терапия: галоперидол 10 мг/сут, циклодол 4 мг/сут, феназепам 1 мг на ночь. Поступила в возбуждённом состоянии с бредовыми идеями величия и особого происхождения, разорванностью мышления.`,
   therapist: `Пациентка Козлова Мария Ивановна 56 лет, давящие головные боли, АД до 160/100, головокружение. Гипертензия 5 лет, лозартан 50 мг нерегулярно. Аллергия на пенициллин. Мать — инсульт. ИМТ 31, АД 155/95, пульс 78. Диагноз: ГБ II ст., I11.9. Назначения: лозартан 100 мг, амлодипин 5 мг. Повтор через 2 нед.`,
   pediatrician: `Ребёнок Петров Алексей, 4 года, t 38.5, кашель, насморк 2 дня. Аллергия на амоксициллин. Осмотр: t 37.8, зев гиперемирован, дыхание жёсткое. Вес 17 кг, рост 104 см. Диагноз: ОРВИ, трахеобронхит J20.9. Назначения: ибупрофен, ингаляции, амброксол. Повтор через 3 дня.`,
 };
@@ -73,7 +80,8 @@ export default function App() {
   const [time, setTime] = useState(0);
   const [uploadName, setUploadName] = useState("");
   const [saved, setSaved] = useState(false);
-  const [diaryPeriod, setDiaryPeriod] = useState("1week");
+  const [diaryDateFrom, setDiaryDateFrom] = useState("");
+  const [diaryDateTo, setDiaryDateTo] = useState("");
   const [records, setRecords] = useState([]);
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [loadingRecords, setLoadingRecords] = useState(false);
@@ -95,13 +103,26 @@ export default function App() {
   const templateRef = useRef(null);
 
   const fmt = (s) => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
-  const isDiary = spec === "psychiatrist" && psyMode === "diary";
-  const getSpecKey = () => isDiary ? "psychiatrist_diary" : spec;
-  const DIARY_PERIODS = { "1week": "1 неделя", "2weeks": "2 недели", "1month": "1 месяц" };
+  const isDiary = psyMode === "diary" && !!SPECS[spec]?.hasDiary;
+  const getSpecKey = () => {
+    if (isDiary) return SPECS[spec]?.diaryKey || "psychiatrist_pnd_diary";
+    if (spec === "psychiatrist_stac") return "psychiatrist_stac_exam";
+    if (spec === "psychiatrist") return "psychiatrist_pnd";
+    return spec;
+  };
+  // Даты дневника
+  const today = new Date().toISOString().split("T")[0];
   const authHeaders = { "Authorization": `Bearer ${token}` };
 
   // Безопасное чтение ошибки — если сервер вернул не JSON (например "Service Unavailable")
   const getErrMsg = async (res) => {
+    if (res.status === 401) {
+      // Токен устарел (например после редеплоя) — выходим автоматически
+      setToken(""); setUser(null);
+      localStorage.removeItem("pisar_token");
+      localStorage.removeItem("pisar_user");
+      return "Сессия истекла — войдите снова";
+    }
     try {
       const d = await res.json();
       return d.detail || d.message || `Ошибка ${res.status}`;
@@ -236,7 +257,7 @@ export default function App() {
     try {
       let sendText = t;
       if (isDiary) {
-        sendText = `Период генерации дневников: ${DIARY_PERIODS[diaryPeriod]}.\n\n${t}`;
+        sendText = `Период ведения дневника: с ${diaryDateFrom || "сегодня"} по ${diaryDateTo || "через 2 недели"}.\n\n${t}`;
       }
       const fd = new FormData(); fd.append("text", sendText); fd.append("specialty", customSpecialty || getSpecKey());
       const res = await fetch(`${API}/structure`, { method: "POST", body: fd });
@@ -266,7 +287,7 @@ export default function App() {
       const fd = new FormData();
       fd.append("patient_name", result.patient_name || "");
       fd.append("diagnosis_code", result.diagnosis_code || "");
-      fd.append("specialty", isDiary ? "Психиатр (дневник)" : (SPECS[spec]?.label || spec));
+      fd.append("specialty", SPECS[spec]?.label + (isDiary ? " (дневник)" : "") || spec);
       fd.append("summary", result.summary || "");
       fd.append("sections", JSON.stringify(result.sections || []));
       fd.append("transcript", text);
@@ -433,10 +454,10 @@ export default function App() {
           <>
             <div className="card">
               <div className="section-label">Специальность</div>
-              <div className="chips">{Object.entries(SPECS).map(([k, v]) => (<div key={k} className={`chip ${spec === k ? "active" : ""}`} onClick={() => setSpec(k)}>{v.label}</div>))}</div>
+              <div className="chips">{Object.entries(SPECS).map(([k, v]) => (<div key={k} className={`chip ${spec === k ? "active" : ""}`} onClick={() => { setSpec(k); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>{v.label}</div>))}</div>
             </div>
 
-            {spec === "psychiatrist" && (
+            {SPECS[spec]?.hasDiary && (
               <div className="card">
                 <div className="section-label">Тип документа</div>
                 <div className="tabs">
@@ -448,11 +469,17 @@ export default function App() {
 
             {isDiary && (
               <div className="card">
-                <div className="section-label">Период дневников</div>
-                <div className="chips">
-                  <div className={`chip ${diaryPeriod === "1week" ? "active" : ""}`} onClick={() => setDiaryPeriod("1week")}>1 неделя</div>
-                  <div className={`chip ${diaryPeriod === "2weeks" ? "active" : ""}`} onClick={() => setDiaryPeriod("2weeks")}>2 недели</div>
-                  <div className={`chip ${diaryPeriod === "1month" ? "active" : ""}`} onClick={() => setDiaryPeriod("1month")}>1 месяц</div>
+                <div className="section-label">Период дневника</div>
+                <div className="diary-dates">
+                  <div className="diary-date-field">
+                    <label className="diary-date-label">С какого числа</label>
+                    <input type="date" className="diary-date-input" value={diaryDateFrom} onChange={e => setDiaryDateFrom(e.target.value)} />
+                  </div>
+                  <div className="diary-date-sep">—</div>
+                  <div className="diary-date-field">
+                    <label className="diary-date-label">По какое число</label>
+                    <input type="date" className="diary-date-input" value={diaryDateTo} onChange={e => setDiaryDateTo(e.target.value)} />
+                  </div>
                 </div>
               </div>
             )}
@@ -473,19 +500,24 @@ export default function App() {
 
             <div className="card">
               <div className="textarea-header">
-                <div className="section-label" style={{ marginBottom: 0 }}>{isDiary ? "Анамнез + текущее состояние" : "Текст записи"}</div>
+                <div className="section-label" style={{ marginBottom: 0 }}>{isDiary ? "Данные пациента" : "Текст записи"}</div>
                 <div className="textarea-actions">
                   {wordCount > 0 && <span className="word-count">{wordCount} слов</span>}
                   {text && <button onClick={clear} className="clear-btn">Очистить</button>}
                 </div>
               </div>
-              <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={isDiary ? "Вставьте данные пациента:\n\n1. ФИО, возраст\n2. Диагноз (МКБ-10)\n3. Текущая терапия (препараты, дозировки)\n4. Анамнез (кратко)\n5. Текущее состояние\n\nНа основе этих данных будут сгенерированы дневники за выбранный период." : "Вставьте текст медицинской записи или используйте запись голоса..."} />
+              <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={isDiary ? "Введите данные пациента:\n\n1. ФИО, возраст\n2. Диагноз (МКБ-10)\n3. Текущая терапия (препараты, дозировки)\n4. Анамнез (кратко)\n5. Текущее состояние" : "Вставьте текст медицинской записи или используйте запись голоса..."} />
             </div>
 
             {isDiary ? (
-              <button onClick={() => process()} disabled={loading || !text.trim()} className={`cta ${loading || !text.trim() ? "off" : ""}`}>
-                {loading ? <><span className="spinner" />{`Составляю дневники за ${DIARY_PERIODS[diaryPeriod]}...`}</> : `Составить дневники за ${DIARY_PERIODS[diaryPeriod]}`}
-              </button>
+              <div className="cta-group">
+                <button onClick={() => process()} disabled={loading || !text.trim()} className={`cta ${loading || !text.trim() ? "off" : ""}`}>
+                  {loading ? <><span className="spinner" />Составляю дневники...</> : "Составить дневники"}
+                </button>
+                <button onClick={() => setView("template")} disabled={loading || !text.trim()} className={`cta cta-alt ${loading || !text.trim() ? "off" : ""}`}>
+                  По загруженному шаблону
+                </button>
+              </div>
             ) : (
               <div className="cta-group">
                 <button onClick={() => process()} disabled={loading || !text.trim()} className={`cta ${loading || !text.trim() ? "off" : ""}`}>
