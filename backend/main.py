@@ -93,21 +93,43 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
     # Debug: показываем первые 8 символов ключа
     key_preview = api_key[:8] + "..." if len(api_key) > 8 else "слишком короткий"
     try:
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(
-            api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={
-                "HTTP-Referer": "https://pisar-production.up.railway.app",
-                "X-Title": "Pisar",
-            },
-        )
-        response = await client.chat.completions.create(
-            model=OPENROUTER_MODEL,
-            max_tokens=max_tokens,
-            messages=messages,
-        )
-        return response.choices[0].message.content
+        import http.client
+        import ssl
+        import asyncio
+
+        body = json.dumps({
+            "model": OPENROUTER_MODEL,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }).encode("utf-8")
+
+        def _sync_request():
+            ctx = ssl.create_default_context()
+            conn = http.client.HTTPSConnection("openrouter.ai", 443, context=ctx, timeout=120)
+            conn.request(
+                "POST",
+                "/api/v1/chat/completions",
+                body=body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://pisar-production.up.railway.app",
+                    "X-Title": "Pisar",
+                    "User-Agent": "python-http-client/3.0",
+                },
+            )
+            resp = conn.getresponse()
+            data = resp.read().decode("utf-8")
+            conn.close()
+            return resp.status, data
+
+        status, data = await asyncio.get_event_loop().run_in_executor(None, _sync_request)
+
+        if status != 200:
+            raise HTTPException(status_code=503, detail=f"OpenRouter {status}: {data[:300]}")
+
+        result = json.loads(data)
+        return result["choices"][0]["message"]["content"]
     except HTTPException:
         raise
     except Exception as e:
