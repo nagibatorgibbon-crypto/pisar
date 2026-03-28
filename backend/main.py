@@ -98,7 +98,7 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://pisar-production.up.railway.app",
-                    "X-Title": "Писарь",
+                    "X-Title": "Pisar",
                 },
                 json={
                     "model": OPENROUTER_MODEL,
