@@ -85,14 +85,14 @@ OPENROUTER_MODEL = "anthropic/claude-sonnet-4"
 
 
 async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
-    """Выполняет запрос к Claude через OpenRouter API."""
+    """Выполняет запрос к Claude через VseGPT API."""
     api_key = OPENROUTER_API_KEY or os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан в переменных окружения")
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                "https://api.vsegpt.ru/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -105,14 +105,14 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
             )
 
         if response.status_code != 200:
-            raise HTTPException(status_code=503, detail=f"OpenRouter {response.status_code}: {response.text[:300]}")
+            raise HTTPException(status_code=503, detail=f"VseGPT {response.status_code}: {response.text[:300]}")
 
         result = response.json()
         return result["choices"][0]["message"]["content"]
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Ошибка OpenRouter: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Ошибка VseGPT: {str(e)}")
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
@@ -748,7 +748,7 @@ async def structure_text(
         except Exception as fix_err:
             raise HTTPException(status_code=500, detail="Ошибка парсинга ответа. Попробуйте ещё раз.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка Claude: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка VseGPT: {str(e)}")
 
 
 @app.post("/process")
