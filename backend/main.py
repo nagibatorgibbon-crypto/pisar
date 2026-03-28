@@ -93,25 +93,29 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
     # Debug: показываем первые 8 символов ключа
     key_preview = api_key[:8] + "..." if len(api_key) > 8 else "слишком короткий"
     try:
-        async with httpx.AsyncClient(follow_redirects=False) as client:
-            resp = await client.post(
-                OPENROUTER_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://pisar-production.up.railway.app",
-                    "X-Title": "Pisar",
-                },
-                json={
-                    "model": OPENROUTER_MODEL,
-                    "max_tokens": max_tokens,
-                    "messages": messages,
-                },
-                timeout=120.0,
-            )
-            if resp.status_code != 200:
-                raise HTTPException(status_code=503, detail=f"OpenRouter API ошибка: {resp.status_code} (ключ: {key_preview}) headers_sent: Authorization=Bearer {key_preview} response: {resp.text[:300]}")
-            return resp.json()["choices"][0]["message"]["content"]
+        import urllib.request
+        import urllib.error
+        body = json.dumps({
+            "model": OPENROUTER_MODEL,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            OPENROUTER_URL,
+            data=body,
+            method="POST",
+        )
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("HTTP-Referer", "https://pisar-production.up.railway.app")
+        req.add_header("X-Title", "Pisar")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                return result["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            raise HTTPException(status_code=503, detail=f"OpenRouter {e.code}: {error_body[:300]}")
     except HTTPException:
         raise
     except Exception as e:
