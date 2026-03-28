@@ -47,7 +47,7 @@ GitHub попросит логин и пароль (или токен).
 2. Перейди во вкладку "Variables"
 3. Добавь две переменные:
    - `NEXARA_API_KEY` = твой ключ Nexara
-   - `OPENROUTER_API_KEY` = твой ключ Anthropic
+   - `ANTHROPIC_API_KEY` = твой ключ Anthropic
 4. Railway автоматически пересоберёт проект
 
 ### Шаг 5 — Получи ссылку

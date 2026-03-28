@@ -6,8 +6,6 @@ const API = process.env.REACT_APP_API_URL || (window.location.hostname === "loca
 const SPECS = {
   psychiatrist:       { label: "Психиатр ПНД",       hasDiary: true,  diaryKey: "psychiatrist_pnd_diary" },
   psychiatrist_stac:  { label: "Психиатр стационара", hasDiary: true,  diaryKey: "psychiatrist_stac_diary" },
-  therapist:          { label: "Терапевт",             hasDiary: false },
-  pediatrician:       { label: "Педиатр",              hasDiary: false },
 };
 
 const DEMOS = {
@@ -15,8 +13,6 @@ const DEMOS = {
   psychiatrist_stac: `Пациентка Смирнова Ольга Фанасьевна, 44 года, доставлена бригадой СМП в сопровождении соседей. Со слов соседей: в течение 2 недель ведёт себя неадекватно, не спит ночами, кричит, называет себя известными именами. Анамнез жизни: уроженка г. Тобольска, образование среднее, работала оператором на заводе, в данный момент не работает, живёт одна. Анамнез заболевания: наблюдается у психиатра с 2019 года, диагноз F20.0, неоднократные госпитализации. Последняя выписка 6 месяцев назад на галоперидоле 5 мг. Терапию принимала нерегулярно, 3 недели назад самостоятельно прекратила. Психический статус: возбуждена, дурашлива, называет себя дочерью Григория Распутина, высказывает идеи особого происхождения и родства с историческими личностями, мышление разорванное, обманы восприятия отрицает, критика отсутствует. АД 125/80, пульс 88.`,
   psychiatrist_pnd_diary: `Пациент Воронович, 25 лет. Диагноз: F32.1 Депрессивный эпизод средней степени. Терапия: сертралин 100 мг утром, кветиапин 25 мг на ночь. Анамнез: работает программистом удалённо, не женат. Жалобы при поступлении: отсутствие настроения, нарушения сна. Текущее состояние: на фоне терапии сон улучшился, сохраняется эмоциональное уплощение, тревожность снизилась.`,
   psychiatrist_stac_diary: `Пациентка Смирнова О.Ф., 44 года. Диагноз: F20.0 Параноидная шизофрения, непрерывный тип течения, параноидный синдром. Терапия: галоперидол 10 мг/сут, циклодол 4 мг/сут, феназепам 1 мг на ночь. Поступила в возбуждённом состоянии с бредовыми идеями величия и особого происхождения, разорванностью мышления.`,
-  therapist: `Пациентка Козлова Мария Ивановна 56 лет, давящие головные боли, АД до 160/100, головокружение. Гипертензия 5 лет, лозартан 50 мг нерегулярно. Аллергия на пенициллин. Мать — инсульт. ИМТ 31, АД 155/95, пульс 78. Диагноз: ГБ II ст., I11.9. Назначения: лозартан 100 мг, амлодипин 5 мг. Повтор через 2 нед.`,
-  pediatrician: `Ребёнок Петров Алексей, 4 года, t 38.5, кашель, насморк 2 дня. Аллергия на амоксициллин. Осмотр: t 37.8, зев гиперемирован, дыхание жёсткое. Вес 17 кг, рост 104 см. Диагноз: ОРВИ, трахеобронхит J20.9. Назначения: ибупрофен, ингаляции, амброксол. Повтор через 3 дня.`,
 };
 
 const MicIcon = () => (<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3.5" fill="currentColor"/><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2"/></svg>);
@@ -52,17 +48,8 @@ function PatientItem({ record, onClick }) {
 }
 
 export default function App() {
-  // ─── Auth state ───
-  const [user, setUser] = useState(() => {
-    try { const u = localStorage.getItem("pisar_user"); return u ? JSON.parse(u) : null; } catch { return null; }
-  });
-  const [token, setToken] = useState(() => localStorage.getItem("pisar_token") || "");
-  const [authView, setAuthView] = useState("login"); // "login" | "register"
-  const [authLogin, setAuthLogin] = useState("");
-  const [authPass, setAuthPass] = useState("");
-  const [authName, setAuthName] = useState("");
-  const [authErr, setAuthErr] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
+  // ─── No auth — open access ───
+  const authHeaders = {};
 
   // ─── App state ───
   const [view, setView] = useState("editor");
@@ -112,17 +99,10 @@ export default function App() {
   };
   // Даты дневника
   const today = new Date().toISOString().split("T")[0];
-  const authHeaders = { "Authorization": `Bearer ${token}` };
 
   // Безопасное чтение ошибки — если сервер вернул не JSON (например "Service Unavailable")
   const getErrMsg = async (res) => {
-    if (res.status === 401) {
-      // Токен устарел (например после редеплоя) — выходим автоматически
-      setToken(""); setUser(null);
-      localStorage.removeItem("pisar_token");
-      localStorage.removeItem("pisar_user");
-      return "Сессия истекла — войдите снова";
-    }
+
     try {
       const d = await res.json();
       return d.detail || d.message || `Ошибка ${res.status}`;
@@ -132,32 +112,9 @@ export default function App() {
   };
 
   // ─── Auth functions ───
-  const doAuth = async (endpoint) => {
-    setAuthErr(""); setAuthLoading(true);
-    try {
-      const fd = new FormData();
-      fd.append("login", authLogin);
-      fd.append("password", authPass);
-      if (endpoint === "/auth/register") fd.append("name", authName || authLogin);
-      const res = await fetch(`${API}${endpoint}`, { method: "POST", body: fd });
-      if (!res.ok) { throw new Error(await getErrMsg(res)); }
-      const data = await res.json();
-      setToken(data.token); setUser(data.user);
-      localStorage.setItem("pisar_token", data.token);
-      localStorage.setItem("pisar_user", JSON.stringify(data.user));
-      setAuthLogin(""); setAuthPass(""); setAuthName("");
-    } catch (e) { setAuthErr(e.message); }
-    finally { setAuthLoading(false); }
-  };
 
-  const logout = () => {
-    setUser(null); setToken("");
-    localStorage.removeItem("pisar_token");
-    localStorage.removeItem("pisar_user");
-    setRecords([]); setResult(null); setText("");
-  };
 
-  useEffect(() => { if (token) fetchRecords(); }, [token]);
+  useEffect(() => { fetchRecords(); }, []);
   const fetchRecords = async () => { try { const r = await fetch(`${API}/records`, { headers: authHeaders }); if (r.ok) setRecords(await r.json()); } catch(e){} };
 
   const startRec = useCallback(async () => {
@@ -257,7 +214,15 @@ export default function App() {
     try {
       let sendText = t;
       if (isDiary) {
-        sendText = `Период ведения дневника: с ${diaryDateFrom || "сегодня"} по ${diaryDateTo || "через 2 недели"}.\n\n${t}`;
+        const from = diaryDateFrom || new Date().toISOString().split("T")[0];
+        const to = diaryDateTo || new Date(Date.now() + 14*24*60*60*1000).toISOString().split("T")[0];
+        // Считаем количество записей (раз в 3 дня)
+        const msFrom = new Date(from).getTime();
+        const msTo = new Date(to).getTime();
+        const days = Math.round((msTo - msFrom) / (1000*60*60*24));
+        const count = Math.max(1, Math.round(days / 3));
+        sendText = `Период ведения дневника: с ${from} по ${to} включительно.\nКоличество записей: ${count} (одна запись каждые 3 дня).\nДаты записей: равномерно распределить ${count} записей между ${from} и ${to}, через каждые 3 дня.\n\n${t}`;
+      }
       }
       const fd = new FormData(); fd.append("text", sendText); fd.append("specialty", customSpecialty || getSpecKey());
       const res = await fetch(`${API}/structure`, { method: "POST", body: fd });
@@ -411,42 +376,13 @@ export default function App() {
     <div className="app-wrap">
       <div className="app">
 
-        {/* ═══ LOGIN SCREEN ═══ */}
-        {!user ? (
-          <>
+        {/* ═══ MAIN APP ═══ */}
+        <>
             <div className="header">
               <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
-              <div><div className="header-title">Писарь</div><div className="header-sub">ИИ-структурирование медицинских записей</div></div>
-            </div>
-            <div className="card">
-              <div className="section-label">{authView === "login" ? "Вход" : "Регистрация"}</div>
-              {authView === "register" && (
-                <input className="auth-input" placeholder="Имя врача" value={authName} onChange={(e) => setAuthName(e.target.value)} />
-              )}
-              <input className="auth-input" placeholder="Логин" value={authLogin} onChange={(e) => setAuthLogin(e.target.value)} />
-              <input className="auth-input" type="password" placeholder="Пароль" value={authPass}
-                onChange={(e) => setAuthPass(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && doAuth(authView === "login" ? "/auth/login" : "/auth/register")} />
-              {authErr && <div className="error" style={{marginTop:8}}>{authErr}</div>}
-              <button onClick={() => doAuth(authView === "login" ? "/auth/login" : "/auth/register")}
-                disabled={authLoading || !authLogin || !authPass}
-                className={`cta ${authLoading || !authLogin || !authPass ? "off" : ""}`} style={{marginTop:12}}>
-                {authLoading ? <><span className="spinner" />Загрузка...</> : authView === "login" ? "Войти" : "Зарегистрироваться"}
-              </button>
-              <div className="auth-switch" onClick={() => { setAuthView(authView === "login" ? "register" : "login"); setAuthErr(""); }}>
-                {authView === "login" ? "Нет аккаунта? Зарегистрироваться" : "Уже есть аккаунт? Войти"}
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            {/* ═══ MAIN APP ═══ */}
-            <div className="header">
-              <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
-              <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">{user.name}</div></div>
+              <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент психиатра</div></div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                 {records.length > 0 && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" ? "editor" : "history")}>{view === "history" || view === "detail" ? "← Назад" : `Пациенты (${records.length})`}</div>}
-                <div className="header-badge" onClick={logout}>Выйти</div>
               </div>
             </div>
 
@@ -454,7 +390,13 @@ export default function App() {
           <>
             <div className="card">
               <div className="section-label">Специальность</div>
-              <div className="chips">{Object.entries(SPECS).map(([k, v]) => (<div key={k} className={`chip ${spec === k ? "active" : ""}`} onClick={() => { setSpec(k); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>{v.label}</div>))}</div>
+              <div className="chips">
+                <div className="chip active">Психиатр</div>
+              </div>
+              <div className="tabs" style={{marginTop:10}}>
+                <div className={`tab ${spec === "psychiatrist" ? "active" : ""}`} onClick={() => { setSpec("psychiatrist"); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>ПНД</div>
+                <div className={`tab ${spec === "psychiatrist_stac" ? "active" : ""}`} onClick={() => { setSpec("psychiatrist_stac"); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>Стационар</div>
+              </div>
             </div>
 
             {SPECS[spec]?.hasDiary && (
@@ -670,8 +612,7 @@ export default function App() {
             </div>
           </div>
         )}
-          </>
-        )}
+        </>
       </div>
     </div>
   );
