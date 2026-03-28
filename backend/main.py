@@ -87,11 +87,10 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
     """Выполняет запрос через OpenRouter API и возвращает текст ответа."""
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip().strip('"').strip("'")
     if not api_key:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан в переменных окружения")
-    # Debug: показываем первые 8 символов ключа
-    key_preview = api_key[:8] + "..." if len(api_key) > 8 else "слишком короткий"
+    key_preview = api_key[:12] + "..." if len(api_key) > 12 else f"длина={len(api_key)}"
     try:
         import http.client
         import ssl
@@ -133,7 +132,7 @@ async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"OpenRouter ошибка: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"OpenRouter ошибка (ключ {key_preview}): {str(e)}")
 
 # Nexara API для распознавания речи
 NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
