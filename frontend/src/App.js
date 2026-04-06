@@ -181,25 +181,14 @@ export default function App() {
       const mr = new MediaRecorder(stream, mrOptions);
       const ext = selectedMime.includes("mp4") || selectedMime.includes("aac") ? "m4a" : "webm";
       chunksRef.current = [];
-      let chunkNum = 0;
 
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
 
-      const autoSendInterval = setInterval(() => {
-        if (chunksRef.current.length > 0) {
-          const blob = new Blob(chunksRef.current, { type: selectedMime || "audio/webm" });
-          chunksRef.current = [];
-          chunkNum++;
-          sendAudio(blob, `chunk_${chunkNum}.${ext}`, "chunk");
-        }
-      }, 5 * 60 * 1000);
-
       mr.onstop = async () => {
-        clearInterval(autoSendInterval);
         if (chunksRef.current.length > 0) {
           const blob = new Blob(chunksRef.current, { type: selectedMime || "audio/webm" });
           setSavedAudio(blob); setSavedAudioName(`recording.${ext}`);
-          await sendAudio(blob, `recording_final.${ext}`, "mic");
+          await sendAudio(blob, `recording.${ext}`, "mic");
         }
       };
 
