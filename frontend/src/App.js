@@ -3,59 +3,31 @@ import "./App.css";
 
 const API = process.env.REACT_APP_API_URL || (window.location.hostname === "localhost" ? "http://localhost:8000" : "");
 
-// ─── Specialty configuration ───
+// ─── Specialty configuration (alphabetical) ───
 
-const SPEC_GROUPS = [
-  {
-    id: "therapy",
-    label: "Терапия",
-    specs: [
-      { key: "therapist", label: "Терапевт" },
-      { key: "neurologist", label: "Невролог" },
-      { key: "cardiologist", label: "Кардиолог" },
-      { key: "gastroenterologist", label: "Гастро" },
-      { key: "pulmonologist", label: "Пульмонолог" },
-      { key: "endocrinologist", label: "Эндокринолог" },
-      { key: "allergist", label: "Аллерголог" },
-    ],
-  },
-  {
-    id: "surgery",
-    label: "Хирургия",
-    specs: [
-      { key: "surgeon", label: "Хирург" },
-      { key: "orthopedist", label: "Травматолог" },
-      { key: "urologist", label: "Уролог" },
-      { key: "gynecologist", label: "Гинеколог" },
-      { key: "ent", label: "ЛОР" },
-      { key: "ophthalmologist", label: "Офтальмолог" },
-      { key: "dermatologist", label: "Дерматолог" },
-    ],
-  },
-  {
-    id: "diagnostics",
-    label: "Диагностика",
-    specs: [
-      { key: "radiologist", label: "Рентгенолог" },
-      { key: "uzi", label: "УЗИ" },
-    ],
-  },
-  {
-    id: "other",
-    label: "Другие",
-    specs: [
-      { key: "pediatrician", label: "Педиатр" },
-    ],
-  },
-  {
-    id: "psychiatry",
-    label: "Психиатрия",
-    specs: [
-      { key: "psychiatrist", label: "ПНД", hasDiary: true, diaryKey: "psychiatrist_pnd_diary" },
-      { key: "psychiatrist_stac", label: "Стационар", hasDiary: true, diaryKey: "psychiatrist_stac_diary" },
-    ],
-  },
+const SPECIALTIES = [
+  { key: "allergist", label: "Аллерголог" },
+  { key: "gastroenterologist", label: "Гастроэнтеролог" },
+  { key: "gynecologist", label: "Гинеколог" },
+  { key: "dermatologist", label: "Дерматолог" },
+  { key: "cardiologist", label: "Кардиолог" },
+  { key: "neurologist", label: "Невролог" },
+  { key: "ophthalmologist", label: "Офтальмолог" },
+  { key: "orthopedist", label: "Ортопед-травматолог" },
+  { key: "ent", label: "Оториноларинголог" },
+  { key: "pediatrician", label: "Педиатр" },
+  { key: "psychiatrist", label: "Психиатр ПНД", hasDiary: true, diaryKey: "psychiatrist_pnd_diary" },
+  { key: "psychiatrist_stac", label: "Психиатр стационар", hasDiary: true, diaryKey: "psychiatrist_stac_diary" },
+  { key: "pulmonologist", label: "Пульмонолог" },
+  { key: "radiologist", label: "Рентгенолог" },
+  { key: "therapist", label: "Терапевт" },
+  { key: "uzi", label: "УЗИ" },
+  { key: "urologist", label: "Уролог" },
+  { key: "surgeon", label: "Хирург" },
+  { key: "endocrinologist", label: "Эндокринолог" },
 ];
+
+const findSpec = (key) => SPECIALTIES.find(s => s.key === key) || { key, label: key };
 
 const UZI_TYPES = [
   { key: "uzi_abdominal", label: "Органы бр. полости" },
@@ -72,9 +44,7 @@ const UZI_TYPES = [
   { key: "uzi_knee", label: "Коленные суставы" },
 ];
 
-// Find spec info from flat list
-const allSpecs = SPEC_GROUPS.flatMap(g => g.specs);
-const findSpec = (key) => allSpecs.find(s => s.key === key) || { key, label: key };
+
 
 const DEMOS = {
   psychiatrist: `Пациент Иванов Сергей Петрович, 42 года, обратился самостоятельно. Жалобы на сниженное настроение в течение последних трёх месяцев, нарушения сна, снижение аппетита, потерю интереса. Суицидальные мысли отрицает. Наследственность: мать — депрессия. Курит 10 сигарет/день. Психический статус: сознание ясное, ориентирован верно. Настроение сниженное, мышление замедленное. Галлюцинаций нет. Критика сохранена. АД 130/85, пульс 72. Диагноз: F33.1. Назначения: сертралин 50 мг утром, миртазапин 15 мг на ночь.`,
@@ -120,7 +90,6 @@ export default function App() {
 
   // ─── App state ───
   const [view, setView] = useState("editor");
-  const [specGroup, setSpecGroup] = useState("therapy");
   const [spec, setSpec] = useState("therapist");
   const [uziType, setUziType] = useState("uzi_abdominal");
   const [psyMode, setPsyMode] = useState("exam");
@@ -161,7 +130,7 @@ export default function App() {
   const fmt = (s) => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
 
   const specInfo = findSpec(spec);
-  const isPsychiatry = specGroup === "psychiatry";
+  const isPsychiatry = spec === "psychiatrist" || spec === "psychiatrist_stac";
   const isUzi = spec === "uzi";
   const isDiary = isPsychiatry && psyMode === "diary" && !!specInfo.hasDiary;
 
@@ -466,29 +435,11 @@ export default function App() {
 
           {view === "editor" && (
             <>
-              {/* Specialty group selector */}
-              <div className="card">
-                <div className="section-label">Направление</div>
-                <div className="chips spec-group-chips">
-                  {SPEC_GROUPS.map(g => (
-                    <div key={g.id} className={`chip ${specGroup === g.id ? "active" : ""}`}
-                      onClick={() => {
-                        setSpecGroup(g.id);
-                        setSpec(g.specs[0].key);
-                        setPsyMode("exam");
-                        setResult(null); setDiagnosis(null);
-                      }}>
-                      {g.label}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Specialty selector within group */}
+              {/* Specialty selector */}
               <div className="card">
                 <div className="section-label">Специальность</div>
                 <div className="spec-grid">
-                  {SPEC_GROUPS.find(g => g.id === specGroup)?.specs.map(s => (
+                  {SPECIALTIES.map(s => (
                     <div key={s.key} className={`spec-chip ${spec === s.key ? "active" : ""}`}
                       onClick={() => { setSpec(s.key); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>
                       {s.label}
