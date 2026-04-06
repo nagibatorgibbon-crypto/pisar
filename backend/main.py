@@ -19,6 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 import warnings
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
 app = FastAPI(title="Писарь API", version="4.0.0")
 
 from fastapi.staticfiles import StaticFiles
@@ -901,67 +904,84 @@ async def transcribe_audio(audio: UploadFile = File(...)):
     converted_mp3 = tmp_path + "_converted.mp3"
     send_path = tmp_path
     send_filename = filename
-    try:
-        import subprocess
-        # Агрессивная конвертация в WAV PCM 16kHz mono — максимальная совместимость
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", tmp_path, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", converted_wav],
-            capture_output=True, timeout=120
-        )
-        if result.returncode == 0 and os.path.exists(converted_wav) and os.path.getsize(converted_wav) > 100:
-            send_path = converted_wav
-            send_filename = "audio.wav"
-        else:
-            # Фолбэк: mp3
-            result2 = subprocess.run(
-                ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-q:a", "4", converted_mp3],
-                capture_output=True, timeout=120
-            )
-            if result2.returncode == 0 and os.path.exists(converted_mp3) and os.path.getsize(converted_mp3) > 100:
-                send_path = converted_mp3
-                send_filename = "audio.mp3"
-    except Exception:
-        pass  # Отправляем оригинал
+    import subprocess
+    import logging
+    logger = logging.getLogger("pisar")
 
-    try:
+    file_size = os.path.getsize(tmp_path)
+    logger.info(f"Transcribe: {filename}, size={file_size}, ext={ext}")
+
+    # Если файл слишком маленький — скорее всего пустая запись
+    if file_size < 500:
+        raise HTTPException(status_code=400, detail="Запись слишком короткая. Попробуйте записать дольше.")
+
+    # Конвертация с максимально мягкими настройками для iOS Safari
+    def try_convert(output_path, extra_args):
+        try:
+            cmd = [
+                "ffmpeg", "-y",
+                "-err_detect", "ignore_err",     # Игнорировать ошибки в потоке
+                "-fflags", "+discardcorrupt",     # Отбрасывать повреждённые фреймы
+                "-i", tmp_path,
+            ] + extra_args + [output_path]
+            r = subprocess.run(cmd, capture_output=True, timeout=120)
+            if r.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                logger.info(f"Converted OK: {output_path}, size={os.path.getsize(output_path)}")
+                return True
+            logger.warning(f"Convert failed: {output_path}, rc={r.returncode}, stderr={r.stderr[-300:] if r.stderr else 'none'}")
+        except Exception as e:
+            logger.warning(f"Convert exception: {e}")
+        return False
+
+    # Попытка 1: WAV PCM (самый совместимый для STT)
+    if try_convert(converted_wav, ["-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1"]):
+        send_path = converted_wav
+        send_filename = "audio.wav"
+    # Попытка 2: mp3
+    elif try_convert(converted_mp3, ["-ar", "16000", "-ac", "1", "-q:a", "4"]):
+        send_path = converted_mp3
+        send_filename = "audio.mp3"
+    else:
+        logger.warning("All conversions failed, sending original file")
+
+    # Отправка в Nexara с ретраями
+    async def send_to_nexara(path, fname):
         async with httpx.AsyncClient(timeout=600.0) as client:
-            with open(send_path, "rb") as audio_file:
-                response = await client.post(
+            with open(path, "rb") as f:
+                return await client.post(
                     NEXARA_API_URL,
                     headers={"Authorization": f"Bearer {NEXARA_API_KEY}"},
-                    files={"file": (send_filename, audio_file)},
+                    files={"file": (fname, f)},
                     data={"task": "transcribe", "language": "ru", "model": "whisper-1", "response_format": "json"},
                 )
 
+    try:
+        response = await send_to_nexara(send_path, send_filename)
+
+        # Если не получилось — пробуем другие форматы
         if response.status_code != 200:
-            # Если WAV не прошёл — пробуем mp3
-            if send_filename == "audio.wav" and os.path.exists(converted_mp3):
-                async with httpx.AsyncClient(timeout=600.0) as client:
-                    with open(converted_mp3, "rb") as audio_file2:
-                        response = await client.post(
-                            NEXARA_API_URL,
-                            headers={"Authorization": f"Bearer {NEXARA_API_KEY}"},
-                            files={"file": ("audio.mp3", audio_file2)},
-                            data={"task": "transcribe", "language": "ru", "model": "whisper-1", "response_format": "json"},
-                        )
-            elif send_filename != filename:
-                # Пробуем оригинал как последний шанс
-                async with httpx.AsyncClient(timeout=600.0) as client:
-                    with open(tmp_path, "rb") as audio_file3:
-                        response = await client.post(
-                            NEXARA_API_URL,
-                            headers={"Authorization": f"Bearer {NEXARA_API_KEY}"},
-                            files={"file": (filename, audio_file3)},
-                            data={"task": "transcribe", "language": "ru", "model": "whisper-1", "response_format": "json"},
-                        )
+            logger.warning(f"Nexara failed with {send_filename}: {response.status_code}")
+            candidates = []
+            if send_path != converted_wav and os.path.exists(converted_wav):
+                candidates.append((converted_wav, "audio.wav"))
+            if send_path != converted_mp3 and os.path.exists(converted_mp3):
+                candidates.append((converted_mp3, "audio.mp3"))
+            if send_path != tmp_path:
+                candidates.append((tmp_path, filename))
+
+            for cpath, cname in candidates:
+                logger.info(f"Retrying with {cname}")
+                response = await send_to_nexara(cpath, cname)
+                if response.status_code == 200:
+                    break
 
         if response.status_code != 200:
-            detail = response.text[:200]
+            detail = "Файл не удалось распознать"
             try:
                 detail = response.json().get("detail", detail)
             except:
                 pass
-            raise HTTPException(status_code=503, detail=f"Не удалось распознать аудио: {detail}")
+            raise HTTPException(status_code=503, detail=f"Ошибка распознавания: {detail}. Попробуйте записать через стандартный диктофон и загрузить файл.")
         return response.json()
     except HTTPException:
         raise
