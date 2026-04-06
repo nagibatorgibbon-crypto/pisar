@@ -438,28 +438,22 @@ export default function App() {
               {/* Specialty selector */}
               <div className="card">
                 <div className="section-label">Специальность</div>
-                <div className="spec-grid">
+                <select className="spec-select" value={spec} onChange={e => { setSpec(e.target.value); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>
                   {SPECIALTIES.map(s => (
-                    <div key={s.key} className={`spec-chip ${spec === s.key ? "active" : ""}`}
-                      onClick={() => { setSpec(s.key); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>
-                      {s.label}
-                    </div>
+                    <option key={s.key} value={s.key}>{s.label}</option>
                   ))}
-                </div>
+                </select>
               </div>
 
               {/* УЗИ sub-type selector */}
               {isUzi && (
                 <div className="card">
                   <div className="section-label">Тип исследования</div>
-                  <div className="spec-grid uzi-grid">
+                  <select className="spec-select" value={uziType} onChange={e => { setUziType(e.target.value); setResult(null); }}>
                     {UZI_TYPES.map(u => (
-                      <div key={u.key} className={`spec-chip ${uziType === u.key ? "active" : ""}`}
-                        onClick={() => { setUziType(u.key); setResult(null); }}>
-                        {u.label}
-                      </div>
+                      <option key={u.key} value={u.key}>{u.label}</option>
                     ))}
-                  </div>
+                  </select>
                 </div>
               )}
 
