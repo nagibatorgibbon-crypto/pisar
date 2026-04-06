@@ -897,20 +897,31 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         tmp.write(content)
         tmp_path = tmp.name
 
-    converted_path = tmp_path + "_converted.mp3"
+    converted_wav = tmp_path + "_converted.wav"
+    converted_mp3 = tmp_path + "_converted.mp3"
     send_path = tmp_path
     send_filename = filename
     try:
         import subprocess
+        # Агрессивная конвертация в WAV PCM 16kHz mono — максимальная совместимость
         result = subprocess.run(
-            ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-q:a", "4", converted_path],
+            ["ffmpeg", "-y", "-i", tmp_path, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", converted_wav],
             capture_output=True, timeout=120
         )
-        if result.returncode == 0 and os.path.exists(converted_path):
-            send_path = converted_path
-            send_filename = "audio.mp3"
+        if result.returncode == 0 and os.path.exists(converted_wav) and os.path.getsize(converted_wav) > 100:
+            send_path = converted_wav
+            send_filename = "audio.wav"
+        else:
+            # Фолбэк: mp3
+            result2 = subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-q:a", "4", converted_mp3],
+                capture_output=True, timeout=120
+            )
+            if result2.returncode == 0 and os.path.exists(converted_mp3) and os.path.getsize(converted_mp3) > 100:
+                send_path = converted_mp3
+                send_filename = "audio.mp3"
     except Exception:
-        pass
+        pass  # Отправляем оригинал
 
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
@@ -921,15 +932,43 @@ async def transcribe_audio(audio: UploadFile = File(...)):
                     files={"file": (send_filename, audio_file)},
                     data={"task": "transcribe", "language": "ru", "model": "whisper-1", "response_format": "json"},
                 )
+
         if response.status_code != 200:
-            raise HTTPException(status_code=503, detail=f"Ошибка Nexara {response.status_code}: {response.text[:200]}")
+            # Если WAV не прошёл — пробуем mp3
+            if send_filename == "audio.wav" and os.path.exists(converted_mp3):
+                async with httpx.AsyncClient(timeout=600.0) as client:
+                    with open(converted_mp3, "rb") as audio_file2:
+                        response = await client.post(
+                            NEXARA_API_URL,
+                            headers={"Authorization": f"Bearer {NEXARA_API_KEY}"},
+                            files={"file": ("audio.mp3", audio_file2)},
+                            data={"task": "transcribe", "language": "ru", "model": "whisper-1", "response_format": "json"},
+                        )
+            elif send_filename != filename:
+                # Пробуем оригинал как последний шанс
+                async with httpx.AsyncClient(timeout=600.0) as client:
+                    with open(tmp_path, "rb") as audio_file3:
+                        response = await client.post(
+                            NEXARA_API_URL,
+                            headers={"Authorization": f"Bearer {NEXARA_API_KEY}"},
+                            files={"file": (filename, audio_file3)},
+                            data={"task": "transcribe", "language": "ru", "model": "whisper-1", "response_format": "json"},
+                        )
+
+        if response.status_code != 200:
+            detail = response.text[:200]
+            try:
+                detail = response.json().get("detail", detail)
+            except:
+                pass
+            raise HTTPException(status_code=503, detail=f"Не удалось распознать аудио: {detail}")
         return response.json()
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Ошибка Nexara: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Ошибка распознавания: {str(e)}")
     finally:
-        for p in [tmp_path, converted_path]:
+        for p in [tmp_path, converted_wav, converted_mp3]:
             try: os.unlink(p)
             except: pass
 
