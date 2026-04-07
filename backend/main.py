@@ -72,6 +72,16 @@ def init_db():
             created_at TEXT DEFAULT ''
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS templates (
+            id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT '',
+            name TEXT DEFAULT '',
+            specialty TEXT DEFAULT '',
+            sections_schema TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT ''
+        )
+    """)
     try:
         conn.execute("ALTER TABLE records ADD COLUMN user_id TEXT DEFAULT ''")
     except Exception:
@@ -994,17 +1004,66 @@ async def transcribe_audio(audio: UploadFile = File(...)):
 
 
 @app.post("/structure")
-async def structure_text(text: str = Form(...), specialty: str = Form("therapist")):
-    prompt = PROMPTS.get(specialty)
-    if not prompt:
-        raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
+async def structure_text(text: str = Form(...), specialty: str = Form("therapist"), template_id: str = Form("")):
+    # Если указан template_id — используем сохранённый шаблон
+    if template_id:
+        conn = get_db()
+        row = conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Шаблон не найден")
+        tpl = dict(row)
+        sections_schema = json.loads(tpl["sections_schema"])
+        sections_list = "\n".join(f'- {s["title"]}: {s["description"]}' for s in sections_schema)
+        sections_json = ",\n    ".join(
+            '{{"title": "{t}", "content": "{d}"}}'.format(t=s["title"], d=s["description"])
+            for s in sections_schema
+        )
 
-    messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": text},
-    ]
+        prompt = f"""Ты — ИИ-ассистент врача. Получив расшифровку речи врача (или интервью с пациентом), структурируй её в медицинский документ по ТОЧНОМУ шаблону.
 
-    raw = await gigachat_complete(messages)
+Шаблон документа: {tpl['name']}
+Специальность: {tpl['specialty']}
+
+Разделы документа (заполни КАЖДЫЙ):
+{sections_list}
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{{
+  "patient_name": "ФИО пациента из расшифровки",
+  "date": "Дата если упомянута",
+  "specialty": "{tpl['specialty']}",
+  "diagnosis_code": "Код МКБ-10 если определён",
+  "sections": [
+    {sections_json}
+  ],
+  "summary": "Краткое резюме"
+}}
+
+ПРАВИЛА:
+- Создай section для КАЖДОГО раздела из списка — ничего не пропускай
+- Пиши содержимое СВЯЗНЫМ ТЕКСТОМ, как в настоящей медицинской документации
+- Используй ТОЛЬКО данные из расшифровки, НЕ придумывай
+- Для полей-шаблонов [в скобках] — подставь реальные данные или оставь [...]
+- Нет данных = "Данные не предоставлены"
+- Русский язык, профессиональная медицинская терминология"""
+
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text[:8000]},
+        ]
+        raw = await gigachat_complete(messages, max_tokens=16384)
+    else:
+        # Обычный режим — встроенный промпт
+        prompt = PROMPTS.get(specialty)
+        if not prompt:
+            raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ]
+        raw = await gigachat_complete(messages)
+
     raw = raw.strip()
     if raw.startswith("```"):
         raw = re.sub(r'^```(?:json)?\s*', '', raw)
@@ -1020,6 +1079,145 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
             except:
                 pass
         raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")
+
+
+# ─── Template management ───
+
+def extract_sections_from_docx(content: bytes) -> list:
+    """Извлекает структуру разделов из .docx шаблона."""
+    from docx import Document as DocxDocument
+    import io
+    doc = DocxDocument(io.BytesIO(content))
+
+    sections = []
+    current_title = None
+    current_desc_lines = []
+
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if not text:
+            continue
+
+        # Определяем заголовки разделов — жирный текст, или короткие строки с двоеточием, или заглавные
+        is_heading = False
+        if p.runs and all(r.bold for r in p.runs if r.text.strip()):
+            is_heading = True
+        elif text.endswith(":") and len(text) < 80:
+            is_heading = True
+        elif text.isupper() and len(text) < 60:
+            is_heading = True
+
+        if is_heading:
+            # Сохраняем предыдущую секцию
+            if current_title:
+                desc = " ".join(current_desc_lines).strip()
+                if len(desc) > 300:
+                    desc = desc[:300] + "..."
+                sections.append({"title": current_title, "description": desc or "Заполнить по данным врача"})
+            current_title = text.rstrip(":")
+            current_desc_lines = []
+        elif current_title:
+            current_desc_lines.append(text)
+
+    # Последняя секция
+    if current_title:
+        desc = " ".join(current_desc_lines).strip()
+        if len(desc) > 300:
+            desc = desc[:300] + "..."
+        sections.append({"title": current_title, "description": desc or "Заполнить по данным врача"})
+
+    return sections
+
+
+@app.post("/templates")
+async def upload_template(
+    template: UploadFile = File(...),
+    name: str = Form(""),
+    specialty: str = Form(""),
+    authorization: str = Header(None),
+):
+    """Загрузить шаблон .docx — извлечь структуру и сохранить."""
+    user = require_auth(authorization)
+    filename = template.filename or "template.docx"
+    content = await template.read()
+
+    if not filename.lower().endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Поддерживаются только .docx файлы")
+
+    try:
+        sections = extract_sections_from_docx(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Ошибка чтения шаблона: {str(e)}")
+
+    if not sections:
+        raise HTTPException(status_code=400, detail="Не удалось извлечь разделы из шаблона")
+
+    tpl_id = str(uuid.uuid4())[:8]
+    tpl_name = name or filename.replace(".docx", "")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO templates (id, user_id, name, specialty, sections_schema, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (tpl_id, user["id"], tpl_name, specialty, json.dumps(sections, ensure_ascii=False), now),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": tpl_id,
+        "name": tpl_name,
+        "specialty": specialty,
+        "sections_count": len(sections),
+        "sections": sections,
+        "created_at": now,
+    }
+
+
+@app.get("/templates")
+async def list_templates(authorization: str = Header(None)):
+    """Список сохранённых шаблонов."""
+    user = require_auth(authorization)
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, name, specialty, sections_schema, created_at FROM templates WHERE user_id = ? ORDER BY created_at DESC",
+        (user["id"],),
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["sections_count"] = len(json.loads(d["sections_schema"]))
+        del d["sections_schema"]
+        result.append(d)
+    return result
+
+
+@app.get("/templates/{tpl_id}")
+async def get_template(tpl_id: str, authorization: str = Header(None)):
+    """Получить шаблон с разделами."""
+    user = require_auth(authorization)
+    conn = get_db()
+    row = conn.execute("SELECT * FROM templates WHERE id = ? AND user_id = ?", (tpl_id, user["id"])).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    d = dict(row)
+    d["sections"] = json.loads(d["sections_schema"])
+    d["sections_count"] = len(d["sections"])
+    del d["sections_schema"]
+    return d
+
+
+@app.delete("/templates/{tpl_id}")
+async def delete_template(tpl_id: str, authorization: str = Header(None)):
+    """Удалить шаблон."""
+    user = require_auth(authorization)
+    conn = get_db()
+    conn.execute("DELETE FROM templates WHERE id = ? AND user_id = ?", (tpl_id, user["id"]))
+    conn.commit()
+    conn.close()
+    return {"deleted": tpl_id}
 
 
 @app.post("/structure-template")
@@ -1041,35 +1239,43 @@ async def structure_with_template(text: str = Form(...), template: UploadFile = 
         except:
             template_text = content.decode("cp1251", errors="replace")
 
-    system_prompt = f"""Ты — ИИ-ассистент врача. Тебе дан ШАБЛОН документа и расшифровка речи врача. Извлеки структуру разделов из шаблона и заполни их данными из расшифровки.
+    system_prompt = f"""Ты — ИИ-ассистент врача. Тебе дан ШАБЛОН медицинского документа и расшифровка речи врача (или интервью с пациентом). 
 
-ШАБЛОН:
-{template_text[:4000]}
+Твоя задача:
+1. Извлечь ВСЕ разделы из шаблона — каждый заголовок, каждый подраздел
+2. Заполнить каждый раздел данными из расшифровки
+3. Для полей-шаблонов вида [текст в скобках] — подставить реальные данные из расшифровки
+4. Сохранить ТОЧНУЮ структуру шаблона, ничего не пропуская
+
+ШАБЛОН ДОКУМЕНТА:
+{template_text[:12000]}
 
 Формат ответа — СТРОГО JSON (без markdown, без backticks):
 {{
-  "patient_name": "ФИО если есть",
-  "date": "Дата если есть",
-  "specialty": "По шаблону",
-  "diagnosis_code": "Код МКБ-10 если есть",
+  "patient_name": "ФИО пациента из расшифровки",
+  "date": "Дата если упомянута",
+  "specialty": "Специальность из шаблона",
+  "diagnosis_code": "Код МКБ-10 если определён",
   "sections": [
-    {{"title": "Название раздела из шаблона", "content": "Заполненное содержимое"}}
+    {{"title": "Точное название раздела из шаблона", "content": "Полностью заполненный текст раздела по данным расшифровки. Для полей-шаблонов подставь реальные данные. Если данных нет — оставь шаблонные скобки [...]."}}
   ],
   "summary": "Краткое резюме"
 }}
 
-Правила:
-- Сохраняй структуру и названия разделов из шаблона
-- Заполняй ТОЛЬКО данными из расшифровки
-- Нет данных = "Данные не предоставлены"
-- Русский язык"""
+ВАЖНЫЕ ПРАВИЛА:
+- Создай section для КАЖДОГО раздела из шаблона (Жалобы, Анамнез жизни, Страховой анамнез, Сопутствующие заболевания, Эпиданамнез, Наркологический анамнез, Аллергологический анамнез, Анамнез заболевания, Психическое состояние, Физикальное исследование, Локальный статус, Диагноз, Обоснование, Назначения и т.д.)
+- Не объединяй и не пропускай разделы
+- Пиши содержимое разделов СВЯЗНЫМ ТЕКСТОМ, как в настоящей медицинской документации
+- Используй ТОЛЬКО данные из расшифровки, НЕ придумывай
+- Если данных для раздела нет в расшифровке — напиши "Данные не предоставлены"
+- Русский язык, профессиональная медицинская терминология"""
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": text},
+        {"role": "user", "content": text[:8000]},
     ]
 
-    raw = await gigachat_complete(messages)
+    raw = await gigachat_complete(messages, max_tokens=16384)
     raw = raw.strip()
     if raw.startswith("```"):
         raw = re.sub(r'^```(?:json)?\s*', '', raw)

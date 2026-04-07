@@ -119,6 +119,9 @@ export default function App() {
   const [diaryPatientId, setDiaryPatientId] = useState("");
   const [diarySaving, setDiarySaving] = useState(false);
   const [diarySaved, setDiarySaved] = useState(false);
+  const [templates, setTemplates] = useState([]);
+  const [selectedTemplate, setSelectedTemplate] = useState("");
+  const [tplUploading, setTplUploading] = useState(false);
 
   const mrRef = useRef(null);
   const chunksRef = useRef([]);
@@ -126,6 +129,7 @@ export default function App() {
   const streamRef = useRef(null);
   const fileRef = useRef(null);
   const templateRef = useRef(null);
+  const tplFileRef = useRef(null);
 
   const fmt = (s) => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
 
@@ -159,8 +163,34 @@ export default function App() {
     }
   };
 
-  useEffect(() => { fetchRecords(); }, []);
+  useEffect(() => { fetchRecords(); fetchTemplates(); }, []);
   const fetchRecords = async () => { try { const r = await fetch(`${API}/records`, { headers: authHeaders }); if (r.ok) setRecords(await r.json()); } catch(e){} };
+  const fetchTemplates = async () => { try { const r = await fetch(`${API}/templates`, { headers: authHeaders }); if (r.ok) setTemplates(await r.json()); } catch(e){} };
+
+  const uploadTemplate = async (file) => {
+    if (!file) return;
+    setTplUploading(true); setErr("");
+    try {
+      const fd = new FormData();
+      fd.append("template", file);
+      fd.append("name", file.name.replace(".docx", ""));
+      fd.append("specialty", getSpecLabel());
+      const res = await fetch(`${API}/templates`, { method: "POST", body: fd, headers: authHeaders });
+      if (!res.ok) throw new Error(await getErrMsg(res));
+      const tpl = await res.json();
+      fetchTemplates();
+      setSelectedTemplate(tpl.id);
+    } catch (e) { setErr(`Ошибка загрузки шаблона: ${e.message}`); }
+    finally { setTplUploading(false); if (tplFileRef.current) tplFileRef.current.value = ""; }
+  };
+
+  const deleteTemplate = async (id) => {
+    try {
+      await fetch(`${API}/templates/${id}`, { method: "DELETE", headers: authHeaders });
+      if (selectedTemplate === id) setSelectedTemplate("");
+      fetchTemplates();
+    } catch(e){}
+  };
 
   // ─── Recording ───
   const startRec = useCallback(async () => {
@@ -255,6 +285,7 @@ export default function App() {
         sendText = `ОБЯЗАТЕЛЬНЫЕ ДАТЫ ДНЕВНИКА (${count} записей):\n${dates.join(', ')}\n\nДАНЫЕ ПАЦИЕНТА:\n${t}`;
       }
       const fd = new FormData(); fd.append("text", sendText); fd.append("specialty", customSpecialty || getSpecKey());
+      if (selectedTemplate) fd.append("template_id", selectedTemplate);
       const res = await fetch(`${API}/structure`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(await getErrMsg(res));
       setResult(await res.json()); setView("editor");
@@ -446,6 +477,28 @@ export default function App() {
                 </div>
               )}
 
+              {/* Template selector */}
+              <div className="card">
+                <div className="section-label">Шаблон документа</div>
+                <div className="tpl-row">
+                  <select className="spec-select" value={selectedTemplate} onChange={e => setSelectedTemplate(e.target.value)}>
+                    <option value="">Стандартный (встроенный)</option>
+                    {templates.map(t => (
+                      <option key={t.id} value={t.id}>{t.name} ({t.sections_count} разд.)</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="tpl-actions">
+                  <input ref={tplFileRef} type="file" accept=".docx" style={{display:"none"}} onChange={e => { const f = e.target.files?.[0]; if (f) uploadTemplate(f); }} />
+                  <button className="tpl-upload-btn" onClick={() => tplFileRef.current?.click()} disabled={tplUploading}>
+                    {tplUploading ? "Загружаю..." : "+ Загрузить свой шаблон (.docx)"}
+                  </button>
+                  {selectedTemplate && (
+                    <button className="tpl-delete-btn" onClick={() => { if (window.confirm("Удалить шаблон?")) deleteTemplate(selectedTemplate); }}>Удалить</button>
+                  )}
+                </div>
+              </div>
+
               {/* Psychiatry: exam/diary toggle */}
               {isPsychiatry && specInfo.hasDiary && (
                 <div className="card">
@@ -505,13 +558,8 @@ export default function App() {
               {/* CTA buttons */}
               <div className="cta-group">
                 <button onClick={() => process()} disabled={loading || !text.trim()} className={`cta ${loading || !text.trim() ? "off" : ""}`}>
-                  {loading ? <><span className="spinner" />{isDiary ? "Составляю дневники..." : "Структурирую..."}</> : (isDiary ? "Составить дневники" : isUzi ? "Создать протокол" : "Структурировать")}
+                  {loading ? <><span className="spinner" />{isDiary ? "Составляю дневники..." : "Структурирую..."}</> : (isDiary ? "Составить дневники" : selectedTemplate ? "Структурировать по шаблону" : isUzi ? "Создать протокол" : "Структурировать")}
                 </button>
-                {!isUzi && (
-                  <button onClick={() => setView("template")} disabled={loading || !text.trim()} className={`cta cta-alt ${loading || !text.trim() ? "off" : ""}`}>
-                    По загруженному шаблону
-                  </button>
-                )}
               </div>
               <a href="#" className="demo-link" onClick={loadDemo}>Попробовать демо-запись →</a>
 

@@ -219,6 +219,15 @@ textarea::placeholder { color: var(--gray-400); }
 .diary-date-sep { font-size: 18px; color: var(--gray-400); padding-top: 18px; }
 @media (max-width: 480px) { .diary-dates { flex-direction: column; } .diary-date-sep { display: none; } }
 
+/* ─── Template selector ─── */
+.tpl-row { margin-bottom: 8px; }
+.tpl-actions { display: flex; gap: 8px; align-items: center; }
+.tpl-upload-btn { flex: 1; padding: 9px 12px; font-size: 12px; font-weight: 600; font-family: var(--font); color: var(--green-500); background: var(--green-50); border: 1.5px dashed var(--green-500); border-radius: var(--radius-sm); cursor: pointer; transition: all 0.15s; }
+.tpl-upload-btn:hover { background: #d4edda; }
+.tpl-upload-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.tpl-delete-btn { padding: 9px 12px; font-size: 12px; font-weight: 600; font-family: var(--font); color: #dc3545; background: #fff5f5; border: 1px solid #fecaca; border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; }
+.tpl-delete-btn:hover { background: #fee2e2; }
+
 /* ─── Modal ─── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; animation: fadeUp 0.2s ease; }
 .modal-card { background: white; border-radius: var(--radius-md); padding: 24px; width: 100%; max-width: 420px; max-height: 80vh; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
