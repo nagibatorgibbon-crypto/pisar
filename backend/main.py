@@ -1014,21 +1014,33 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
             raise HTTPException(status_code=404, detail="Шаблон не найден")
         tpl = dict(row)
         sections_schema = json.loads(tpl["sections_schema"])
-        sections_list = "\n".join(f'- {s["title"]}: {s["description"]}' for s in sections_schema)
 
-        prompt = f"""Ты — ИИ-ассистент врача. Структурируй расшифровку речи в медицинский документ.
+        # Собираем шаблон как текст с разделами
+        template_body = ""
+        for s in sections_schema:
+            tpl_text = s.get("template_text", s.get("description", ""))
+            template_body += f'\n=== {s["title"]} ===\n{tpl_text}\n'
 
-Разделы (заполни КАЖДЫЙ по данным расшифровки):
-{sections_list}
+        prompt = f"""Ты — ИИ-ассистент врача. Тебе дан ШАБЛОН медицинского документа с полями в квадратных скобках [...] и расшифровка речи врача/пациента.
+
+Задача: заполни КАЖДОЕ поле [...] в шаблоне реальными данными из расшифровки. Сохрани стиль, формулировки и структуру шаблона. Пиши профессиональным врачебным языком.
+
+ШАБЛОН:
+{template_body[:6000]}
 
 Ответ — СТРОГО JSON (без markdown):
-{{"patient_name":"ФИО","date":"","specialty":"{tpl['specialty']}","diagnosis_code":"","sections":[{{"title":"Название раздела","content":"Текст"}}],"summary":""}}
+{{"patient_name":"ФИО","date":"","specialty":"{tpl['specialty']}","diagnosis_code":"","sections":[{{"title":"Название раздела","content":"Заполненный текст раздела"}}],"summary":""}}
 
-Правила: section для КАЖДОГО раздела, связный текст, только из расшифровки, нет данных="Данные не предоставлены", русский язык."""
+Правила:
+- Для КАЖДОГО раздела шаблона создай section
+- Замени [...] на данные из расшифровки. Если данных нет — оставь [не указано]
+- Сохраняй медицинские формулировки шаблона
+- Пиши связным профессиональным текстом
+- НЕ придумывай данные, которых нет в расшифровке"""
 
         messages = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": text[:4000]},
+            {"role": "user", "content": text[:5000]},
         ]
         raw = await gigachat_complete(messages, max_tokens=8192)
     else:
@@ -1062,47 +1074,50 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
 # ─── Template management ───
 
 def extract_sections_from_docx(content: bytes) -> list:
-    """Извлекает структуру разделов из .docx шаблона."""
+    """Извлекает структуру разделов из .docx шаблона с полным текстом."""
     from docx import Document as DocxDocument
     import io
     doc = DocxDocument(io.BytesIO(content))
 
     sections = []
     current_title = None
-    current_desc_lines = []
+    current_lines = []
 
     for p in doc.paragraphs:
         text = p.text.strip()
         if not text:
             continue
 
-        # Определяем заголовки разделов — жирный текст, или короткие строки с двоеточием, или заглавные
+        # Определяем заголовки — жирный текст с двоеточием, или UPPERCASE короткие строки
         is_heading = False
         if p.runs and all(r.bold for r in p.runs if r.text.strip()):
-            is_heading = True
-        elif text.endswith(":") and len(text) < 80:
+            # Полностью жирный текст — это заголовок если короткий
+            if len(text) < 80:
+                is_heading = True
+        elif text.endswith(":") and len(text) < 60 and not text.startswith("[") and not text.startswith("("):
             is_heading = True
         elif text.isupper() and len(text) < 60:
             is_heading = True
 
         if is_heading:
-            # Сохраняем предыдущую секцию
             if current_title:
-                desc = " ".join(current_desc_lines).strip()
-                if len(desc) > 150:
-                    desc = desc[:150] + "..."
-                sections.append({"title": current_title, "description": desc or "Заполнить по данным врача"})
+                full_text = "\n".join(current_lines)
+                sections.append({"title": current_title, "template_text": full_text})
             current_title = text.rstrip(":")
-            current_desc_lines = []
+            current_lines = []
         elif current_title:
-            current_desc_lines.append(text)
+            current_lines.append(text)
+        else:
+            # Текст до первого заголовка — пропускаем или кладём в "Шапка"
+            if not sections and text:
+                if not current_title:
+                    current_title = "Шапка документа"
+                    current_lines = []
+                current_lines.append(text)
 
-    # Последняя секция
     if current_title:
-        desc = " ".join(current_desc_lines).strip()
-        if len(desc) > 150:
-            desc = desc[:150] + "..."
-        sections.append({"title": current_title, "description": desc or "Заполнить по данным врача"})
+        full_text = "\n".join(current_lines)
+        sections.append({"title": current_title, "template_text": full_text})
 
     return sections
 
