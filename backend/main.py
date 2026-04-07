@@ -1015,44 +1015,22 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
         tpl = dict(row)
         sections_schema = json.loads(tpl["sections_schema"])
         sections_list = "\n".join(f'- {s["title"]}: {s["description"]}' for s in sections_schema)
-        sections_json = ",\n    ".join(
-            '{{"title": "{t}", "content": "{d}"}}'.format(t=s["title"], d=s["description"])
-            for s in sections_schema
-        )
 
-        prompt = f"""Ты — ИИ-ассистент врача. Получив расшифровку речи врача (или интервью с пациентом), структурируй её в медицинский документ по ТОЧНОМУ шаблону.
+        prompt = f"""Ты — ИИ-ассистент врача. Структурируй расшифровку речи в медицинский документ.
 
-Шаблон документа: {tpl['name']}
-Специальность: {tpl['specialty']}
-
-Разделы документа (заполни КАЖДЫЙ):
+Разделы (заполни КАЖДЫЙ по данным расшифровки):
 {sections_list}
 
-Формат ответа — СТРОГО JSON (без markdown, без backticks):
-{{
-  "patient_name": "ФИО пациента из расшифровки",
-  "date": "Дата если упомянута",
-  "specialty": "{tpl['specialty']}",
-  "diagnosis_code": "Код МКБ-10 если определён",
-  "sections": [
-    {sections_json}
-  ],
-  "summary": "Краткое резюме"
-}}
+Ответ — СТРОГО JSON (без markdown):
+{{"patient_name":"ФИО","date":"","specialty":"{tpl['specialty']}","diagnosis_code":"","sections":[{{"title":"Название раздела","content":"Текст"}}],"summary":""}}
 
-ПРАВИЛА:
-- Создай section для КАЖДОГО раздела из списка — ничего не пропускай
-- Пиши содержимое СВЯЗНЫМ ТЕКСТОМ, как в настоящей медицинской документации
-- Используй ТОЛЬКО данные из расшифровки, НЕ придумывай
-- Для полей-шаблонов [в скобках] — подставь реальные данные или оставь [...]
-- Нет данных = "Данные не предоставлены"
-- Русский язык, профессиональная медицинская терминология"""
+Правила: section для КАЖДОГО раздела, связный текст, только из расшифровки, нет данных="Данные не предоставлены", русский язык."""
 
         messages = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": text[:8000]},
+            {"role": "user", "content": text[:4000]},
         ]
-        raw = await gigachat_complete(messages, max_tokens=16384)
+        raw = await gigachat_complete(messages, max_tokens=8192)
     else:
         # Обычный режим — встроенный промпт
         prompt = PROMPTS.get(specialty)
@@ -1111,8 +1089,8 @@ def extract_sections_from_docx(content: bytes) -> list:
             # Сохраняем предыдущую секцию
             if current_title:
                 desc = " ".join(current_desc_lines).strip()
-                if len(desc) > 300:
-                    desc = desc[:300] + "..."
+                if len(desc) > 150:
+                    desc = desc[:150] + "..."
                 sections.append({"title": current_title, "description": desc or "Заполнить по данным врача"})
             current_title = text.rstrip(":")
             current_desc_lines = []
@@ -1122,8 +1100,8 @@ def extract_sections_from_docx(content: bytes) -> list:
     # Последняя секция
     if current_title:
         desc = " ".join(current_desc_lines).strip()
-        if len(desc) > 300:
-            desc = desc[:300] + "..."
+        if len(desc) > 150:
+            desc = desc[:150] + "..."
         sections.append({"title": current_title, "description": desc or "Заполнить по данным врача"})
 
     return sections
