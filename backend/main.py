@@ -1137,7 +1137,12 @@ async def upload_template(
     authorization: str = Header(None),
 ):
     """Загрузить шаблон .docx — извлечь структуру и сохранить."""
-    user = require_auth(authorization)
+    user_id = ""
+    try:
+        user = require_auth(authorization)
+        user_id = user["id"]
+    except:
+        pass
     filename = template.filename or "template.docx"
     content = await template.read()
 
@@ -1159,7 +1164,7 @@ async def upload_template(
     conn = get_db()
     conn.execute(
         "INSERT INTO templates (id, user_id, name, specialty, sections_schema, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (tpl_id, user["id"], tpl_name, specialty, json.dumps(sections, ensure_ascii=False), now),
+        (tpl_id, user_id, tpl_name, specialty, json.dumps(sections, ensure_ascii=False), now),
     )
     conn.commit()
     conn.close()
@@ -1177,11 +1182,9 @@ async def upload_template(
 @app.get("/templates")
 async def list_templates(authorization: str = Header(None)):
     """Список сохранённых шаблонов."""
-    user = require_auth(authorization)
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, name, specialty, sections_schema, created_at FROM templates WHERE user_id = ? ORDER BY created_at DESC",
-        (user["id"],),
+        "SELECT id, name, specialty, sections_schema, created_at FROM templates ORDER BY created_at DESC",
     ).fetchall()
     conn.close()
     result = []
@@ -1196,9 +1199,8 @@ async def list_templates(authorization: str = Header(None)):
 @app.get("/templates/{tpl_id}")
 async def get_template(tpl_id: str, authorization: str = Header(None)):
     """Получить шаблон с разделами."""
-    user = require_auth(authorization)
     conn = get_db()
-    row = conn.execute("SELECT * FROM templates WHERE id = ? AND user_id = ?", (tpl_id, user["id"])).fetchone()
+    row = conn.execute("SELECT * FROM templates WHERE id = ?", (tpl_id,)).fetchone()
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Шаблон не найден")
@@ -1212,9 +1214,8 @@ async def get_template(tpl_id: str, authorization: str = Header(None)):
 @app.delete("/templates/{tpl_id}")
 async def delete_template(tpl_id: str, authorization: str = Header(None)):
     """Удалить шаблон."""
-    user = require_auth(authorization)
     conn = get_db()
-    conn.execute("DELETE FROM templates WHERE id = ? AND user_id = ?", (tpl_id, user["id"]))
+    conn.execute("DELETE FROM templates WHERE id = ?", (tpl_id,))
     conn.commit()
     conn.close()
     return {"deleted": tpl_id}
