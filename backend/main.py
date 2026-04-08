@@ -79,11 +79,16 @@ def init_db():
             name TEXT DEFAULT '',
             specialty TEXT DEFAULT '',
             sections_schema TEXT DEFAULT '[]',
+            docx_data BLOB DEFAULT NULL,
             created_at TEXT DEFAULT ''
         )
     """)
     try:
         conn.execute("ALTER TABLE records ADD COLUMN user_id TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE templates ADD COLUMN docx_data BLOB DEFAULT NULL")
     except Exception:
         pass
     conn.commit()
@@ -1036,7 +1041,9 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
 - Замени [...] на данные из расшифровки. Если данных нет — оставь [не указано]
 - Сохраняй медицинские формулировки шаблона
 - Пиши связным профессиональным текстом
-- НЕ придумывай данные, которых нет в расшифровке"""
+- НЕ выдумывай фактические данные (ФИО, даты, цифры), которых нет в расшифровке
+- Диагноз, обоснование диагноза и код МКБ-10 — ОБЯЗАТЕЛЬНО сформулируй на основе клинических данных из расшифровки (симптомы, анамнез, течение). Ты врач — анализируй и ставь диагноз
+- Назначения: если врач не озвучил конкретные препараты — предложи стандартную терапию по клиническим рекомендациям для данного диагноза"""
 
         messages = [
             {"role": "system", "content": prompt},
@@ -1159,8 +1166,8 @@ async def upload_template(
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO templates (id, user_id, name, specialty, sections_schema, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (tpl_id, user_id, tpl_name, specialty, json.dumps(sections, ensure_ascii=False), now),
+        "INSERT INTO templates (id, user_id, name, specialty, sections_schema, docx_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (tpl_id, user_id, tpl_name, specialty, json.dumps(sections, ensure_ascii=False), content, now),
     )
     conn.commit()
     conn.close()
@@ -1443,11 +1450,105 @@ async def export_word(
     specialty: str = Form(""),
     summary: str = Form(""),
     sections: str = Form("[]"),
+    template_id: str = Form(""),
 ):
     from docx import Document as DocxDocument
     from docx.shared import Pt, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+    sections_data = json.loads(sections) if isinstance(sections, str) else sections
+
+    # ─── Template-based export: fill original docx ───
+    if template_id:
+        conn = get_db()
+        row = conn.execute("SELECT docx_data FROM templates WHERE id = ?", (template_id,)).fetchone()
+        conn.close()
+
+        if row and row["docx_data"]:
+            doc = DocxDocument(io.BytesIO(row["docx_data"]))
+
+            # Build map: normalized title → content
+            content_map = {}
+            for sec in sections_data:
+                title = sec.get("title", "").strip().lower()
+                content_map[title] = sec.get("content", "")
+
+            # Walk through docx paragraphs, find section headers, replace content
+            i = 0
+            paragraphs = doc.paragraphs
+            while i < len(paragraphs):
+                p = paragraphs[i]
+                text = p.text.strip()
+
+                # Check if this paragraph is a section header
+                is_heading = False
+                matched_key = None
+                if text:
+                    normalized = text.rstrip(":").strip().lower()
+                    # Try exact match
+                    if normalized in content_map:
+                        is_heading = True
+                        matched_key = normalized
+                    else:
+                        # Try partial match (heading starts with key or key starts with heading)
+                        for key in content_map:
+                            if key.startswith(normalized) or normalized.startswith(key):
+                                is_heading = True
+                                matched_key = key
+                                break
+
+                if is_heading and matched_key:
+                    new_content = content_map.pop(matched_key, "")
+                    if new_content and new_content != "Данные не предоставлены":
+                        # Find where the next section starts
+                        j = i + 1
+                        while j < len(paragraphs):
+                            next_text = paragraphs[j].text.strip()
+                            next_norm = next_text.rstrip(":").strip().lower()
+                            if next_norm in content_map or (next_text and paragraphs[j].runs and all(r.bold for r in paragraphs[j].runs if r.text.strip()) and len(next_text) < 100):
+                                break
+                            j += 1
+
+                        # Replace content paragraphs between header and next header
+                        content_paragraphs = list(range(i + 1, j))
+                        if content_paragraphs:
+                            # Put all content in first content paragraph, clear rest
+                            first_cp = content_paragraphs[0]
+                            for run in paragraphs[first_cp].runs:
+                                run.text = ""
+                            if paragraphs[first_cp].runs:
+                                paragraphs[first_cp].runs[0].text = new_content
+                            else:
+                                paragraphs[first_cp].text = new_content
+                            # Clear remaining content paragraphs
+                            for cp_idx in content_paragraphs[1:]:
+                                for run in paragraphs[cp_idx].runs:
+                                    run.text = ""
+                        i = j
+                        continue
+                i += 1
+
+            # Also replace [bracket fields] in any remaining paragraphs
+            for p in doc.paragraphs:
+                if patient_name and "[Фамилия" in p.text:
+                    for run in p.runs:
+                        if "[Фамилия" in run.text or "[ФИО" in run.text:
+                            run.text = run.text.replace("[Фамилия Имя Отчество]", patient_name)
+                            run.text = run.text.replace("[ФИО пациента]", patient_name)
+
+            buffer = io.BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
+
+            filename = f"Doc_{patient_name.split()[0] if patient_name else 'patient'}.docx"
+            from urllib.parse import quote
+            return StreamingResponse(
+                buffer,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+            )
+
+    # ─── Default export: generate new docx ───
     doc = DocxDocument()
     for section in doc.sections:
         section.top_margin = Cm(2)
@@ -1466,7 +1567,6 @@ async def export_word(
     is_uzi = "узи" in specialty.lower()
     is_psychiatry = "психиатр" in specialty.lower()
 
-    # Title
     if not is_diary:
         title = doc.add_paragraph()
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1492,7 +1592,6 @@ async def export_word(
         run.font.name = 'Times New Roman'
         run.italic = True
 
-    # Preamble for psychiatry
     if is_psychiatry and not is_diary:
         preamble = doc.add_paragraph()
         preamble.paragraph_format.space_before = Pt(8)
@@ -1505,7 +1604,6 @@ async def export_word(
         run.font.name = 'Times New Roman'
         run.font.size = Pt(12)
 
-    sections_data = json.loads(sections) if isinstance(sections, str) else sections
     for sec in sections_data:
         title_text = sec.get("title", "")
         content_text = sec.get("content", "")

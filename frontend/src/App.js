@@ -391,6 +391,7 @@ export default function App() {
       fd.append("specialty", r.specialty || getSpecLabel());
       fd.append("summary", r.summary || "");
       fd.append("sections", JSON.stringify(r.sections || []));
+      if (selectedTemplate) fd.append("template_id", selectedTemplate);
       const res = await fetch(`${API}/export-word`, { method: "POST", body: fd });
       if (!res.ok) throw new Error("Ошибка");
       const blob = await res.blob();
