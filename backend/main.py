@@ -1026,7 +1026,7 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
 Задача: заполни КАЖДОЕ поле [...] в шаблоне реальными данными из расшифровки. Сохрани стиль, формулировки и структуру шаблона. Пиши профессиональным врачебным языком.
 
 ШАБЛОН:
-{template_body[:6000]}
+{template_body[:10000]}
 
 Ответ — СТРОГО JSON (без markdown):
 {{"patient_name":"ФИО","date":"","specialty":"{tpl['specialty']}","diagnosis_code":"","sections":[{{"title":"Название раздела","content":"Заполненный текст раздела"}}],"summary":""}}
@@ -1074,7 +1074,7 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
 # ─── Template management ───
 
 def extract_sections_from_docx(content: bytes) -> list:
-    """Извлекает структуру разделов из .docx шаблона с полным текстом."""
+    """Извлекает структуру разделов из .docx шаблона с текстом полей."""
     from docx import Document as DocxDocument
     import io
     doc = DocxDocument(io.BytesIO(content))
@@ -1083,16 +1083,18 @@ def extract_sections_from_docx(content: bytes) -> list:
     current_title = None
     current_lines = []
 
+    # Разделы-бойлерплейт которые не нужно отправлять в LLM полностью
+    SKIP_SECTIONS = {"Шкала оценки падений Hendrich II", "Карта по обучению пациента",
+                     "Оценка потребности и барьеров к обучению", "План обучения"}
+
     for p in doc.paragraphs:
         text = p.text.strip()
         if not text:
             continue
 
-        # Определяем заголовки — жирный текст с двоеточием, или UPPERCASE короткие строки
         is_heading = False
         if p.runs and all(r.bold for r in p.runs if r.text.strip()):
-            # Полностью жирный текст — это заголовок если короткий
-            if len(text) < 80:
+            if len(text) < 100:
                 is_heading = True
         elif text.endswith(":") and len(text) < 60 and not text.startswith("[") and not text.startswith("("):
             is_heading = True
@@ -1102,21 +1104,22 @@ def extract_sections_from_docx(content: bytes) -> list:
         if is_heading:
             if current_title:
                 full_text = "\n".join(current_lines)
+                # Сжимаем: оставляем только первые 500 символов шаблона для каждого раздела
+                if len(full_text) > 500:
+                    full_text = full_text[:500] + "..."
                 sections.append({"title": current_title, "template_text": full_text})
             current_title = text.rstrip(":")
             current_lines = []
         elif current_title:
+            # Пропускаем бойлерплейт (подписи, шкалы)
+            if current_title in SKIP_SECTIONS:
+                continue
             current_lines.append(text)
-        else:
-            # Текст до первого заголовка — пропускаем или кладём в "Шапка"
-            if not sections and text:
-                if not current_title:
-                    current_title = "Шапка документа"
-                    current_lines = []
-                current_lines.append(text)
 
     if current_title:
         full_text = "\n".join(current_lines)
+        if len(full_text) > 500:
+            full_text = full_text[:500] + "..."
         sections.append({"title": current_title, "template_text": full_text})
 
     return sections
