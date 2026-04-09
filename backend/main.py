@@ -1020,38 +1020,116 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
         tpl = dict(row)
         sections_schema = json.loads(tpl["sections_schema"])
 
-        # Собираем шаблон как текст с разделами
-        template_body = ""
-        for s in sections_schema:
-            tpl_text = s.get("template_text", s.get("description", ""))
-            template_body += f'\n=== {s["title"]} ===\n{tpl_text}\n'
+        # Извлекаем список полей из шаблона (компактный — экономим токены)
+        fields = []
+        for sec in sections_schema:
+            tpl_text = sec.get("template_text", "")
+            if not tpl_text:
+                continue
+            for line in tpl_text.split("\n"):
+                line = line.strip()
+                if not line or len(line) < 5:
+                    continue
+                # Извлекаем "ключ: значение" пары
+                if ":" in line:
+                    key = line.split(":")[0].strip()
+                    if key and len(key) < 80:
+                        fields.append(f"{sec['title']}.{key}")
 
-        prompt = f"""Ты — ИИ-ассистент врача. Тебе дан ШАБЛОН медицинского документа и расшифровка речи врача.
+        fields_list = "\n".join(f"- {f}" for f in fields[:60])  # Макс 60 полей
 
-КРИТИЧЕСКИ ВАЖНО: Сохрани ТОЧНЫЙ формат шаблона. Каждую строку, каждый перенос, каждое название поля, каждую единицу измерения, нормы в скобках — всё должно остаться КАК В ШАБЛОНЕ. Ты только подставляешь значения из расшифровки вместо пустых мест и шаблонных значений.
+        prompt = f"""Из расшифровки речи врача извлеки значения для полей медицинского документа. Также определи ФИО пациента и заключение.
 
-ШАБЛОН:
-{template_body[:10000]}
+Поля:
+{fields_list}
 
 Ответ — СТРОГО JSON (без markdown):
-{{"patient_name":"ФИО","date":"","specialty":"{tpl['specialty']}","diagnosis_code":"","sections":[{{"title":"Название раздела","content":"Текст раздела с заполненными значениями"}}],"summary":"Краткое заключение"}}
+{{"patient_name":"ФИО","diagnosis_code":"МКБ-10","values":{{"Поле":"значение"}},"conclusion":"Заключение по результатам исследования"}}
 
 Правила:
-- Для КАЖДОГО раздела шаблона создай section
-- Содержимое content = ТОЧНАЯ КОПИЯ текста из шаблона, но с подставленными реальными значениями из расшифровки
-- Сохраняй ВСЕ переносы строк (\\n) как в шаблоне
-- Сохраняй названия полей, двоеточия, единицы измерения, нормы в скобках
-- Заменяй только ЗНАЧЕНИЯ (числа, размеры, описания) на данные из расшифровки
-- Если в расшифровке есть отклонения от нормы — подставь реальные значения и добавь пометку
-- Если данных для поля нет — оставь шаблонное значение или напиши [не указано]
-- НЕ переписывай текст своими словами, НЕ объединяй строки в абзацы
-- Диагноз/заключение — сформулируй по клиническим данным из расшифровки"""
+- Для каждого поля из списка укажи значение из расшифровки
+- Если данных нет — не включай поле
+- Числовые значения — только цифры и единицы
+- Заключение — сформулируй по клиническим данным
+- Компактно, без повторений"""
 
         messages = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": text[:5000]},
+            {"role": "user", "content": text[:4000]},
         ]
-        raw = await gigachat_complete(messages, max_tokens=8192)
+        raw = await gigachat_complete(messages, max_tokens=2048)
+
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r'^```(?:json)?\s*', '', raw)
+            raw = re.sub(r'\s*```$', '', raw)
+
+        try:
+            ai_data = json.loads(raw)
+        except:
+            match = re.search(r'\{[\s\S]*\}', raw)
+            if match:
+                ai_data = json.loads(match.group())
+            else:
+                raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")
+
+        values = ai_data.get("values", {})
+        conclusion = ai_data.get("conclusion", "")
+        patient_name_ai = ai_data.get("patient_name", "")
+        diagnosis_code_ai = ai_data.get("diagnosis_code", "")
+
+        # Заполняем шаблон значениями
+        result_sections = []
+        for sec in sections_schema:
+            tpl_text = sec.get("template_text", "")
+            if not tpl_text:
+                result_sections.append({"title": sec["title"], "content": ""})
+                continue
+
+            filled_lines = []
+            for line in tpl_text.split("\n"):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+
+                # Ищем значение для этой строки
+                if ":" in stripped:
+                    key_part = stripped.split(":")[0].strip()
+                    full_key = f"{sec['title']}.{key_part}"
+
+                    # Ищем по точному совпадению или частичному
+                    matched_value = None
+                    for vk, vv in values.items():
+                        if vk == full_key or vk.endswith(f".{key_part}") or key_part.lower() in vk.lower():
+                            matched_value = vv
+                            break
+
+                    if matched_value:
+                        # Заменяем значение после двоеточия
+                        colon_pos = stripped.index(":")
+                        filled_lines.append(f"{stripped[:colon_pos+1]} {matched_value}")
+                    else:
+                        filled_lines.append(stripped)
+                else:
+                    filled_lines.append(stripped)
+
+            content = "\n".join(filled_lines)
+
+            # Добавляем заключение к последней секции
+            if conclusion and sec == sections_schema[-1]:
+                content += f"\n\nЗАКЛЮЧЕНИЕ: {conclusion}"
+
+            result_sections.append({"title": sec["title"], "content": content})
+
+        return {
+            "patient_name": patient_name_ai,
+            "date": "",
+            "specialty": tpl.get("specialty", ""),
+            "diagnosis_code": diagnosis_code_ai,
+            "sections": result_sections,
+            "summary": conclusion,
+        }
+
     else:
         # Обычный режим — встроенный промпт
         prompt = PROMPTS.get(specialty)
@@ -1068,19 +1146,31 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
         raw = re.sub(r'^```(?:json)?\s*', '', raw)
         raw = re.sub(r'\s*```$', '', raw)
 
+    # Strip === markers from AI content
+    raw = re.sub(r'===\s*[^=\n]+\s*===\s*\\n', '', raw)
+    raw = re.sub(r'===\s*[^=\n]+\s*===\s*\n', '', raw)
+
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
+        # Clean sections content
+        if "sections" in result:
+            for sec in result["sections"]:
+                if "content" in sec:
+                    sec["content"] = re.sub(r'===\s*[^=\n]+\s*===\s*\n?', '', sec["content"]).strip()
+        return result
     except json.JSONDecodeError:
         match = re.search(r'\{[\s\S]*\}', raw)
         if match:
             try:
-                return json.loads(match.group())
+                result = json.loads(match.group())
+                if "sections" in result:
+                    for sec in result["sections"]:
+                        if "content" in sec:
+                            sec["content"] = re.sub(r'===\s*[^=\n]+\s*===\s*\n?', '', sec["content"]).strip()
+                return result
             except:
                 pass
-        raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")
-
-
-# ─── Template management ───
+        raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")# ─── Template management ───
 
 def extract_sections_from_docx(content: bytes) -> list:
     """Извлекает структуру разделов из .docx шаблона с текстом полей."""
@@ -1460,83 +1550,91 @@ async def export_word(
 
     sections_data = json.loads(sections) if isinstance(sections, str) else sections
 
-    # ─── Template-based export: fill original docx ───
+    # ─── Template-based export: generate formatted docx ───
     if template_id:
         conn = get_db()
-        row = conn.execute("SELECT docx_data FROM templates WHERE id = ?", (template_id,)).fetchone()
+        row = conn.execute("SELECT docx_data, name FROM templates WHERE id = ?", (template_id,)).fetchone()
         conn.close()
 
         if row and row["docx_data"]:
-            doc = DocxDocument(io.BytesIO(row["docx_data"]))
+            # Use original docx as style source
+            original_doc = DocxDocument(io.BytesIO(row["docx_data"]))
 
-            # Build map: normalized title → content
-            content_map = {}
+            # Copy page setup from original
+            doc = DocxDocument()
+            for section in doc.sections:
+                orig_sec = original_doc.sections[0]
+                section.top_margin = orig_sec.top_margin
+                section.bottom_margin = orig_sec.bottom_margin
+                section.left_margin = orig_sec.left_margin
+                section.right_margin = orig_sec.right_margin
+
+            style = doc.styles['Normal']
+            style.font.name = 'Times New Roman'
+            style.font.size = Pt(11)
+            style.paragraph_format.space_after = Pt(2)
+
+            # Copy tables from original (header tables etc)
+            for table in original_doc.tables:
+                # Recreate table structure
+                new_table = doc.add_table(rows=len(table.rows), cols=len(table.columns))
+                new_table.style = 'Table Grid'
+                for i, orig_row in enumerate(table.rows):
+                    for j, orig_cell in enumerate(orig_row.cells):
+                        cell_text = orig_cell.text
+                        # Replace template vars with actual data
+                        if patient_name:
+                            cell_text = cell_text.replace("{{PatFIO}}", patient_name)
+                        new_table.rows[i].cells[j].text = cell_text
+                        for p in new_table.rows[i].cells[j].paragraphs:
+                            for run in p.runs:
+                                run.font.name = 'Times New Roman'
+                                run.font.size = Pt(10)
+                                run.bold = True
+
+            # Write sections
             for sec in sections_data:
-                title = sec.get("title", "").strip().lower()
-                content_map[title] = sec.get("content", "")
+                title = sec.get("title", "")
+                content = sec.get("content", "")
+                if not content or content == "Данные не предоставлены":
+                    continue
 
-            # Walk through docx paragraphs, find section headers, replace content
-            i = 0
-            paragraphs = doc.paragraphs
-            while i < len(paragraphs):
-                p = paragraphs[i]
-                text = p.text.strip()
+                # Strip === markers if AI included them
+                content = re.sub(r'===\s*[^=]+\s*===\s*\n?', '', content).strip()
 
-                # Check if this paragraph is a section header
-                is_heading = False
-                matched_key = None
-                if text:
-                    normalized = text.rstrip(":").strip().lower()
-                    # Try exact match
-                    if normalized in content_map:
-                        is_heading = True
-                        matched_key = normalized
-                    else:
-                        # Try partial match (heading starts with key or key starts with heading)
-                        for key in content_map:
-                            if key.startswith(normalized) or normalized.startswith(key):
-                                is_heading = True
-                                matched_key = key
-                                break
+                # Skip empty title sections like "Врач"
+                if "врач" in title.lower() and not content:
+                    continue
 
-                if is_heading and matched_key:
-                    new_content = content_map.pop(matched_key, "")
-                    if new_content and new_content != "Данные не предоставлены":
-                        # Find where the next section starts
-                        j = i + 1
-                        while j < len(paragraphs):
-                            next_text = paragraphs[j].text.strip()
-                            next_norm = next_text.rstrip(":").strip().lower()
-                            if next_norm in content_map or (next_text and paragraphs[j].runs and all(r.bold for r in paragraphs[j].runs if r.text.strip()) and len(next_text) < 100):
-                                break
-                            j += 1
+                # Section header — bold
+                p_title = doc.add_paragraph()
+                p_title.paragraph_format.space_before = Pt(8)
+                p_title.paragraph_format.space_after = Pt(2)
+                run = p_title.add_run(f"{title}:")
+                run.bold = True
+                run.font.name = 'Times New Roman'
+                run.font.size = Pt(11)
 
-                        # Replace content paragraphs between header and next header
-                        content_paragraphs = list(range(i + 1, j))
-                        if content_paragraphs:
-                            # Put all content in first content paragraph, clear rest
-                            first_cp = content_paragraphs[0]
-                            for run in paragraphs[first_cp].runs:
-                                run.text = ""
-                            if paragraphs[first_cp].runs:
-                                paragraphs[first_cp].runs[0].text = new_content
-                            else:
-                                paragraphs[first_cp].text = new_content
-                            # Clear remaining content paragraphs
-                            for cp_idx in content_paragraphs[1:]:
-                                for run in paragraphs[cp_idx].runs:
-                                    run.text = ""
-                        i = j
+                # Content — preserve line breaks
+                lines = content.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if not line:
                         continue
-                i += 1
+                    p = doc.add_paragraph()
+                    p.paragraph_format.space_after = Pt(1)
+                    p.paragraph_format.space_before = Pt(0)
+                    run = p.add_run(line)
+                    run.font.name = 'Times New Roman'
+                    run.font.size = Pt(11)
 
-            # Also replace [bracket fields] in any remaining paragraphs
-            for p in doc.paragraphs:
-                if patient_name and "[Фамилия" in p.text:
-                    for run in p.runs:
-                        if "[Фамилия" in run.text or "[ФИО" in run.text:
-                            run.text = run.text.replace("[Фамилия Имя Отчество]", patient_name)
-                            run.text = run.text.replace("[ФИО пациента]", patient_name)
+            # Signature line
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(16)
+            run = p.add_run("Врач: _______________________________")
+            run.bold = True
+            run.font.name = 'Times New Roman'
+            run.font.size = Pt(11)
 
             buffer = io.BytesIO()
             doc.save(buffer)
