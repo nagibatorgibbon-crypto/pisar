@@ -1020,38 +1020,45 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
         tpl = dict(row)
         sections_schema = json.loads(tpl["sections_schema"])
 
-        # Извлекаем список полей из шаблона (компактный — экономим токены)
-        fields = []
+        # Извлекаем ВСЕ строки шаблона с ключами — сохраняем оригинальную строку
+        field_keys = []  # (section_title, key_name, full_original_line)
         for sec in sections_schema:
             tpl_text = sec.get("template_text", "")
             if not tpl_text:
                 continue
             for line in tpl_text.split("\n"):
-                line = line.strip()
-                if not line or len(line) < 5:
+                stripped = line.strip()
+                if not stripped or len(stripped) < 5:
                     continue
-                # Извлекаем "ключ: значение" пары
-                if ":" in line:
-                    key = line.split(":")[0].strip()
-                    if key and len(key) < 80:
-                        fields.append(f"{sec['title']}.{key}")
+                if ":" in stripped:
+                    key = stripped.split(":")[0].strip()
+                    if key and 3 < len(key) < 80:
+                        field_keys.append((sec["title"], key, stripped))
 
-        fields_list = "\n".join(f"- {f}" for f in fields[:60])  # Макс 60 полей
+        # Компактный список для AI — только ключи без дублей
+        seen_keys = set()
+        unique_fields = []
+        for sec_title, key, _ in field_keys:
+            fk = f"{sec_title} > {key}"
+            if fk not in seen_keys:
+                seen_keys.add(fk)
+                unique_fields.append(fk)
 
-        prompt = f"""Из расшифровки речи врача извлеки значения для полей медицинского документа. Также определи ФИО пациента и заключение.
+        fields_list = "\n".join(f"- {f}" for f in unique_fields[:60])
 
-Поля:
+        prompt = f"""Из расшифровки речи врача извлеки значения для полей медицинского документа.
+
+Поля документа:
 {fields_list}
 
-Ответ — СТРОГО JSON (без markdown):
-{{"patient_name":"ФИО","diagnosis_code":"МКБ-10","values":{{"Поле":"значение"}},"conclusion":"Заключение по результатам исследования"}}
+Ответ — СТРОГО JSON (без markdown, без пояснений):
+{{"patient_name":"ФИО пациента","diagnosis_code":"МКБ-10","conclusion":"Развёрнутое заключение по результатам","values":{{"ТОЧНОЕ_ИМЯ_ПОЛЯ":"значение после двоеточия"}}}}
 
-Правила:
-- Для каждого поля из списка укажи значение из расшифровки
-- Если данных нет — не включай поле
-- Числовые значения — только цифры и единицы
-- Заключение — сформулируй по клиническим данным
-- Компактно, без повторений"""
+ВАЖНО:
+- Ключи в values должны ТОЧНО совпадать с именами полей из списка выше
+- Значение = то, что идёт ПОСЛЕ двоеточия в этом поле
+- Если данных нет — НЕ включай поле (оставится шаблонное)
+- Заключение — развёрнутое, по всем органам, как пишет врач УЗД"""
 
         messages = [
             {"role": "system", "content": prompt},
@@ -1078,7 +1085,17 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
         patient_name_ai = ai_data.get("patient_name", "")
         diagnosis_code_ai = ai_data.get("diagnosis_code", "")
 
-        # Заполняем шаблон значениями
+        # Строим маппинг: нормализованный ключ → значение
+        norm_values = {}
+        for k, v in values.items():
+            # "ПЕЧЕНЬ > Размеры" → "размеры", "печень > размеры", etc
+            norm_values[k.lower().strip()] = v
+            if " > " in k:
+                parts = k.split(" > ")
+                norm_values[parts[-1].lower().strip()] = v
+                norm_values[k.replace(" > ", ".").lower().strip()] = v
+
+        # Заполняем шаблон — построчно заменяем значения после двоеточий
         result_sections = []
         for sec in sections_schema:
             tpl_text = sec.get("template_text", "")
@@ -1090,36 +1107,54 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
             for line in tpl_text.split("\n"):
                 stripped = line.strip()
                 if not stripped:
+                    filled_lines.append("")
                     continue
 
-                # Ищем значение для этой строки
                 if ":" in stripped:
                     key_part = stripped.split(":")[0].strip()
-                    full_key = f"{sec['title']}.{key_part}"
+                    full_key = f"{sec['title']} > {key_part}"
 
-                    # Ищем по точному совпадению или частичному
+                    # Ищем значение по нескольким вариантам ключа
                     matched_value = None
-                    for vk, vv in values.items():
-                        if vk == full_key or vk.endswith(f".{key_part}") or key_part.lower() in vk.lower():
-                            matched_value = vv
+                    search_keys = [
+                        full_key.lower(),
+                        key_part.lower(),
+                        f"{sec['title'].lower()}.{key_part.lower()}",
+                        f"{sec['title'].lower()} > {key_part.lower()}",
+                    ]
+                    for sk in search_keys:
+                        if sk in norm_values:
+                            matched_value = norm_values[sk]
                             break
 
-                    if matched_value:
-                        # Заменяем значение после двоеточия
-                        colon_pos = stripped.index(":")
-                        filled_lines.append(f"{stripped[:colon_pos+1]} {matched_value}")
+                    if matched_value is not None:
+                        # Сохраняем отступы оригинала + ключ + новое значение
+                        leading_spaces = len(line) - len(line.lstrip())
+                        prefix = line[:leading_spaces] + key_part + ": "
+                        filled_lines.append(prefix + str(matched_value))
                     else:
-                        filled_lines.append(stripped)
+                        filled_lines.append(line)  # Оставляем оригинал
                 else:
-                    filled_lines.append(stripped)
+                    filled_lines.append(line)
 
             content = "\n".join(filled_lines)
-
-            # Добавляем заключение к последней секции
-            if conclusion and sec == sections_schema[-1]:
-                content += f"\n\nЗАКЛЮЧЕНИЕ: {conclusion}"
-
             result_sections.append({"title": sec["title"], "content": content})
+
+        # Добавляем заключение
+        if conclusion:
+            # Ищем секцию ЗАКЛЮЧЕНИЕ или добавляем к последней
+            found = False
+            for sec in result_sections:
+                if "заключение" in sec["title"].lower():
+                    sec["content"] = conclusion
+                    found = True
+                    break
+            if not found:
+                # Добавляем заключение к контенту последней непустой секции
+                for sec in reversed(result_sections):
+                    if sec["content"]:
+                        sec["content"] += f"\n\nЗАКЛЮЧЕНИЕ: {conclusion}"
+                        break
 
         return {
             "patient_name": patient_name_ai,
@@ -1128,6 +1163,7 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
             "diagnosis_code": diagnosis_code_ai,
             "sections": result_sections,
             "summary": conclusion,
+            "_template_id": template_id,
         }
 
     else:
@@ -1550,91 +1586,91 @@ async def export_word(
 
     sections_data = json.loads(sections) if isinstance(sections, str) else sections
 
-    # ─── Template-based export: generate formatted docx ───
+    # ─── Template-based export: modify original docx directly ───
     if template_id:
         conn = get_db()
-        row = conn.execute("SELECT docx_data, name FROM templates WHERE id = ?", (template_id,)).fetchone()
+        row = conn.execute("SELECT docx_data, sections_schema FROM templates WHERE id = ?", (template_id,)).fetchone()
         conn.close()
 
         if row and row["docx_data"]:
-            # Use original docx as style source
-            original_doc = DocxDocument(io.BytesIO(row["docx_data"]))
+            doc = DocxDocument(io.BytesIO(row["docx_data"]))
 
-            # Copy page setup from original
-            doc = DocxDocument()
-            for section in doc.sections:
-                orig_sec = original_doc.sections[0]
-                section.top_margin = orig_sec.top_margin
-                section.bottom_margin = orig_sec.bottom_margin
-                section.left_margin = orig_sec.left_margin
-                section.right_margin = orig_sec.right_margin
-
-            style = doc.styles['Normal']
-            style.font.name = 'Times New Roman'
-            style.font.size = Pt(11)
-            style.paragraph_format.space_after = Pt(2)
-
-            # Copy tables from original (header tables etc)
-            for table in original_doc.tables:
-                # Recreate table structure
-                new_table = doc.add_table(rows=len(table.rows), cols=len(table.columns))
-                new_table.style = 'Table Grid'
-                for i, orig_row in enumerate(table.rows):
-                    for j, orig_cell in enumerate(orig_row.cells):
-                        cell_text = orig_cell.text
-                        # Replace template vars with actual data
-                        if patient_name:
-                            cell_text = cell_text.replace("{{PatFIO}}", patient_name)
-                        new_table.rows[i].cells[j].text = cell_text
-                        for p in new_table.rows[i].cells[j].paragraphs:
-                            for run in p.runs:
-                                run.font.name = 'Times New Roman'
-                                run.font.size = Pt(10)
-                                run.bold = True
-
-            # Write sections
+            # Build values map from sections_data (AI result)
+            all_values = {}
             for sec in sections_data:
-                title = sec.get("title", "")
                 content = sec.get("content", "")
-                if not content or content == "Данные не предоставлены":
+                if not content:
                     continue
-
-                # Strip === markers if AI included them
-                content = re.sub(r'===\s*[^=]+\s*===\s*\n?', '', content).strip()
-
-                # Skip empty title sections like "Врач"
-                if "врач" in title.lower() and not content:
-                    continue
-
-                # Section header — bold
-                p_title = doc.add_paragraph()
-                p_title.paragraph_format.space_before = Pt(8)
-                p_title.paragraph_format.space_after = Pt(2)
-                run = p_title.add_run(f"{title}:")
-                run.bold = True
-                run.font.name = 'Times New Roman'
-                run.font.size = Pt(11)
-
-                # Content — preserve line breaks
-                lines = content.split('\n')
-                for line in lines:
+                for line in content.split("\n"):
                     line = line.strip()
-                    if not line:
-                        continue
-                    p = doc.add_paragraph()
-                    p.paragraph_format.space_after = Pt(1)
-                    p.paragraph_format.space_before = Pt(0)
-                    run = p.add_run(line)
-                    run.font.name = 'Times New Roman'
-                    run.font.size = Pt(11)
+                    if ":" in line and len(line) > 5:
+                        key = line.split(":")[0].strip().lower()
+                        val = ":".join(line.split(":")[1:]).strip()
+                        if key and val:
+                            all_values[key] = val
 
-            # Signature line
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(16)
-            run = p.add_run("Врач: _______________________________")
-            run.bold = True
-            run.font.name = 'Times New Roman'
-            run.font.size = Pt(11)
+            # Also extract conclusion
+            conclusion_text = ""
+            for sec in sections_data:
+                c = sec.get("content", "")
+                if "ЗАКЛЮЧЕНИЕ" in c:
+                    idx = c.index("ЗАКЛЮЧЕНИЕ")
+                    conclusion_text = c[idx:].split(":", 1)[-1].strip() if ":" in c[idx:] else ""
+
+            # Walk through original docx paragraphs and replace values
+            for p in doc.paragraphs:
+                text = p.text.strip()
+                if not text or ":" not in text:
+                    continue
+
+                key_part = text.split(":")[0].strip().lower()
+
+                # Check if we have a replacement
+                matched_val = all_values.get(key_part)
+                if not matched_val:
+                    # Try partial match
+                    for k, v in all_values.items():
+                        if k == key_part or key_part.endswith(k) or k.endswith(key_part):
+                            matched_val = v
+                            break
+
+                if matched_val:
+                    # Replace value after colon, preserving formatting
+                    # Find the colon position in runs
+                    colon_found = False
+                    char_count = 0
+                    for run_idx, run in enumerate(p.runs):
+                        if colon_found:
+                            run.text = ""  # Clear all runs after colon
+                        elif ":" in run.text:
+                            colon_pos = run.text.index(":")
+                            run.text = run.text[:colon_pos + 1] + " " + matched_val
+                            colon_found = True
+
+                # Replace ЗАКЛЮЧЕНИЕ
+                if "ЗАКЛЮЧЕНИЕ" in text and conclusion_text:
+                    for run in p.runs:
+                        if "ЗАКЛЮЧЕНИЕ" in run.text:
+                            colon_pos = run.text.index(":") if ":" in run.text else -1
+                            if colon_pos >= 0:
+                                run.text = run.text[:colon_pos + 1] + " " + conclusion_text
+                            break
+
+                # Replace template variables
+                if patient_name:
+                    for run in p.runs:
+                        if "{{PatFIO}}" in run.text:
+                            run.text = run.text.replace("{{PatFIO}}", patient_name)
+
+            # Also replace in tables
+            for table in doc.tables:
+                for tbl_row in table.rows:
+                    for cell in tbl_row.cells:
+                        if patient_name and "{{PatFIO}}" in cell.text:
+                            for p in cell.paragraphs:
+                                for run in p.runs:
+                                    if "{{PatFIO}}" in run.text:
+                                        run.text = run.text.replace("{{PatFIO}}", patient_name)
 
             buffer = io.BytesIO()
             doc.save(buffer)
