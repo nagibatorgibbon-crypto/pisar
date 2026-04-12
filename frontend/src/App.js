@@ -122,6 +122,7 @@ export default function App() {
   const [templates, setTemplates] = useState([]);
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [tplUploading, setTplUploading] = useState(false);
+  const [tplPreview, setTplPreview] = useState(null); // {id, name, sections: [...]}
 
   const mrRef = useRef(null);
   const chunksRef = useRef([]);
@@ -137,6 +138,19 @@ export default function App() {
   const isPsychiatry = spec === "psychiatrist" || spec === "psychiatrist_stac";
   const isUzi = spec === "uzi";
   const isDiary = isPsychiatry && psyMode === "diary" && !!specInfo.hasDiary;
+
+  // Map spec key → template specialty filter
+  const getTemplateFilter = () => {
+    if (isUzi) return "УЗИ";
+    if (spec === "psychiatrist" || spec === "psychiatrist_stac") return "Психиатр";
+    if (spec === "orthopedist") return "Травматолог";
+    return specInfo.label;
+  };
+
+  const filteredTemplates = templates.filter(t => {
+    const filter = getTemplateFilter();
+    return t.specialty === filter || t.specialty === specInfo.label;
+  });
 
   const getSpecKey = () => {
     if (isUzi) return uziType;
@@ -190,6 +204,18 @@ export default function App() {
       if (selectedTemplate === id) setSelectedTemplate("");
       fetchTemplates();
     } catch(e){}
+  };
+
+  const viewTemplate = async (id) => {
+    if (!id) { setTplPreview(null); return; }
+    try {
+      const r = await fetch(`${API}/templates/${id}`, { headers: authHeaders });
+      if (r.ok) {
+        const data = await r.json();
+        setTplPreview(data);
+        setView("tpl-preview");
+      }
+    } catch(e) { setErr("Не удалось загрузить шаблон"); }
   };
 
   // ─── Recording ───
@@ -450,7 +476,7 @@ export default function App() {
             <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
             <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент врача</div></div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              {records.length > 0 && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" ? "editor" : "history")}>{view === "history" || view === "detail" ? "← Назад" : `Пациенты (${records.length})`}</div>}
+              {records.length > 0 && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" || view === "tpl-preview" ? "editor" : "history")}>{view === "history" || view === "detail" || view === "tpl-preview" ? "← Назад" : `Пациенты (${records.length})`}</div>}
             </div>
           </div>
 
@@ -459,7 +485,7 @@ export default function App() {
               {/* Specialty selector */}
               <div className="card">
                 <div className="section-label">Специальность</div>
-                <select className="spec-select" value={spec} onChange={e => { setSpec(e.target.value); setPsyMode("exam"); setResult(null); setDiagnosis(null); }}>
+                <select className="spec-select" value={spec} onChange={e => { setSpec(e.target.value); setPsyMode("exam"); setResult(null); setDiagnosis(null); setSelectedTemplate(""); }}>
                   {SPECIALTIES.map(s => (
                     <option key={s.key} value={s.key}>{s.label}</option>
                   ))}
@@ -467,38 +493,38 @@ export default function App() {
               </div>
 
               {/* УЗИ sub-type selector */}
-              {isUzi && (
+              {/* Template selector */}
+              {!isDiary && (
                 <div className="card">
-                  <div className="section-label">Тип исследования</div>
-                  <select className="spec-select" value={uziType} onChange={e => { setUziType(e.target.value); setResult(null); }}>
-                    {UZI_TYPES.map(u => (
-                      <option key={u.key} value={u.key}>{u.label}</option>
-                    ))}
-                  </select>
+                  <div className="section-label">Шаблон документа</div>
+                  {filteredTemplates.length > 0 ? (
+                    <>
+                      <div className="tpl-row">
+                        <select className="spec-select" value={selectedTemplate} onChange={e => setSelectedTemplate(e.target.value)}>
+                          <option value="">Без шаблона (стандартный)</option>
+                          {filteredTemplates.map(t => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedTemplate && (
+                        <div className="tpl-actions">
+                          <button className="tpl-preview-btn" onClick={() => viewTemplate(selectedTemplate)}>Просмотр</button>
+                          <button className="tpl-delete-btn" onClick={() => { if (window.confirm("Удалить шаблон?")) deleteTemplate(selectedTemplate); }}>Удалить</button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="tpl-empty">Нет шаблонов для этой специальности</div>
+                  )}
+                  <div className="tpl-actions" style={{marginTop: 6}}>
+                    <input ref={tplFileRef} type="file" accept=".docx" style={{display:"none"}} onChange={e => { const f = e.target.files?.[0]; if (f) uploadTemplate(f); }} />
+                    <button className="tpl-upload-btn" onClick={() => tplFileRef.current?.click()} disabled={tplUploading}>
+                      {tplUploading ? "Загружаю..." : "+ Свой шаблон (.docx)"}
+                    </button>
+                  </div>
                 </div>
               )}
-
-              {/* Template selector */}
-              <div className="card">
-                <div className="section-label">Шаблон документа</div>
-                <div className="tpl-row">
-                  <select className="spec-select" value={selectedTemplate} onChange={e => setSelectedTemplate(e.target.value)}>
-                    <option value="">Стандартный (встроенный)</option>
-                    {templates.map(t => (
-                      <option key={t.id} value={t.id}>{t.name} ({t.sections_count} разд.)</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="tpl-actions">
-                  <input ref={tplFileRef} type="file" accept=".docx" style={{display:"none"}} onChange={e => { const f = e.target.files?.[0]; if (f) uploadTemplate(f); }} />
-                  <button className="tpl-upload-btn" onClick={() => tplFileRef.current?.click()} disabled={tplUploading}>
-                    {tplUploading ? "Загружаю..." : "+ Загрузить свой шаблон (.docx)"}
-                  </button>
-                  {selectedTemplate && (
-                    <button className="tpl-delete-btn" onClick={() => { if (window.confirm("Удалить шаблон?")) deleteTemplate(selectedTemplate); }}>Удалить</button>
-                  )}
-                </div>
-              </div>
 
               {/* Psychiatry: exam/diary toggle */}
               {isPsychiatry && specInfo.hasDiary && (
@@ -663,6 +689,28 @@ export default function App() {
               {renderSections(selectedRecord)}
               {selectedRecord.transcript && (<details className="transcript-details"><summary>Исходная расшифровка</summary><p className="transcript-text">{selectedRecord.transcript}</p></details>)}
               <button onClick={() => deleteRecord(selectedRecord.id)} className="delete-btn">Удалить запись</button>
+            </div>
+          )}
+
+          {view === "tpl-preview" && tplPreview && (
+            <div className="tpl-preview-view">
+              <button className="back-btn" onClick={() => setView("editor")}>← Назад к редактору</button>
+              <div className="card">
+                <div className="tpl-preview-header">
+                  <div>
+                    <div className="tpl-preview-title">{tplPreview.name}</div>
+                    <div className="tpl-preview-meta">{tplPreview.specialty} · {tplPreview.sections_count} разделов</div>
+                  </div>
+                </div>
+              </div>
+              <div className="tpl-sections-list">
+                {(tplPreview.sections || []).map((sec, i) => (
+                  <div key={i} className="card tpl-section-card">
+                    <div className="tpl-section-title">{sec.title}</div>
+                    <pre className="tpl-section-text">{sec.template_text || "(пусто)"}</pre>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

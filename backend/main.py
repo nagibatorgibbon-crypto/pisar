@@ -1406,7 +1406,7 @@ async def list_templates(authorization: str = Header(None)):
 async def get_template(tpl_id: str, authorization: str = Header(None)):
     """Получить шаблон с разделами."""
     conn = get_db()
-    row = conn.execute("SELECT * FROM templates WHERE id = ?", (tpl_id,)).fetchone()
+    row = conn.execute("SELECT id, user_id, name, specialty, sections_schema, created_at FROM templates WHERE id = ?", (tpl_id,)).fetchone()
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Шаблон не найден")
