@@ -207,6 +207,51 @@ textarea::placeholder { color: var(--gray-400); }
   .patient-bar { flex-direction: column; gap: 10px; }
 }
 
+/* ─── Onboarding ─── */
+.onboarding { border: 1.5px dashed var(--green-500); background: var(--green-50); }
+.onboarding-title { font-size: 15px; font-weight: 700; color: var(--gray-900); margin-bottom: 14px; }
+.onboarding-steps { display: flex; flex-direction: column; gap: 10px; }
+.onboarding-step { display: flex; align-items: flex-start; gap: 10px; }
+.step-num { width: 24px; height: 24px; border-radius: 50%; background: var(--green-500); color: white; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.step-text { font-size: 13px; color: var(--gray-700); line-height: 1.5; padding-top: 2px; }
+.step-bold { font-weight: 600; color: var(--gray-900); }
+.onboarding-tips { border-top: 1px solid rgba(13,124,95,0.15); padding-top: 8px; margin-top: 14px; }
+.tip-text { font-size: 12px; color: var(--gray-600, #6c757d); line-height: 1.5; padding: 3px 0 3px 12px; position: relative; }
+.tip-text::before { content: ''; position: absolute; left: 0; top: 10px; width: 4px; height: 4px; border-radius: 50%; background: var(--green-500); }
+
+/* ─── Disclaimer ─── */
+.disclaimer { text-align: center; font-size: 12px; color: var(--gray-500); background: var(--gray-50); border-radius: var(--radius-sm); padding: 10px 14px; margin: 12px 0 8px; border: 1px solid var(--gray-200); }
+
+/* ─── Live Assist ─── */
+.live-card { border: 2px solid var(--green-500); }
+.live-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.live-title { font-size: 16px; font-weight: 700; color: var(--gray-900); }
+.live-sub { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
+.live-check-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green-500); animation: blink 1.5s infinite; flex-shrink: 0; }
+.live-controls { margin-bottom: 12px; }
+.live-stop-btn { background: #dc3545 !important; }
+.live-stop-btn:hover { background: #c82333 !important; box-shadow: 0 4px 14px rgba(220,53,69,0.25) !important; }
+.live-transcript { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: var(--radius-sm); padding: 14px; font-size: 14px; line-height: 1.7; color: var(--gray-800); max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+.live-actions { display: flex; gap: 8px; margin-top: 10px; }
+.live-actions .tpl-preview-btn { flex: 1; }
+
+/* ─── Live Alerts ─── */
+.live-alerts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.live-alert { display: flex; gap: 10px; padding: 14px; border-radius: var(--radius-md); animation: fadeUp 0.3s ease; align-items: flex-start; }
+.live-alert-danger { background: #fef2f2; border: 1.5px solid #fca5a5; }
+.live-alert-warning { background: #fffbeb; border: 1.5px solid #fcd34d; }
+.live-alert-info { background: #eff6ff; border: 1.5px solid #93c5fd; }
+.alert-icon { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; font-family: var(--font); }
+.live-alert-danger .alert-icon { background: #dc3545; color: white; }
+.live-alert-warning .alert-icon { background: #f59e0b; color: white; }
+.live-alert-info .alert-icon { background: #3b82f6; color: white; }
+.alert-body { flex: 1; min-width: 0; }
+.alert-title { font-size: 14px; font-weight: 700; color: var(--gray-900); margin-bottom: 3px; }
+.alert-action { font-size: 13px; color: var(--gray-700); line-height: 1.4; }
+.alert-law { font-size: 11px; color: var(--gray-500); margin-top: 4px; font-weight: 500; }
+.alert-dismiss { background: none; border: none; font-size: 20px; color: var(--gray-400); cursor: pointer; padding: 0 4px; flex-shrink: 0; font-family: var(--font); line-height: 1; }
+.alert-dismiss:hover { color: var(--gray-700); }
+
 /* ─── Diary ─── */
 .diary-save-row { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .save-btn-new { background: var(--gray-100); color: var(--gray-700); border: 1px solid var(--gray-300); }

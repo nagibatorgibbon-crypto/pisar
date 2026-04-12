@@ -122,7 +122,17 @@ export default function App() {
   const [templates, setTemplates] = useState([]);
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [tplUploading, setTplUploading] = useState(false);
-  const [tplPreview, setTplPreview] = useState(null); // {id, name, sections: [...]}
+  const [tplPreview, setTplPreview] = useState(null);
+
+  // Live assist state
+  const [liveMode, setLiveMode] = useState(false);
+  const [liveText, setLiveText] = useState("");
+  const [liveListening, setLiveListening] = useState(false);
+  const [liveAlerts, setLiveAlerts] = useState([]);
+  const [liveChecking, setLiveChecking] = useState(false);
+  const recognitionRef = useRef(null);
+  const liveCheckTimerRef = useRef(null);
+  const lastCheckedRef = useRef(""); // {id, name, sections: [...]}
 
   const mrRef = useRef(null);
   const chunksRef = useRef([]);
@@ -433,6 +443,142 @@ export default function App() {
   const newRecord = () => { clear(); setView("editor"); };
   const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
 
+  // ─── Live Assist ───
+  const startLiveAssist = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setErr("Распознавание речи не поддерживается в этом браузере. Используйте Chrome.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "ru-RU";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    let finalText = liveText;
+
+    recognition.onresult = (event) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalText += " " + t;
+          setLiveText(finalText.trim());
+        } else {
+          interim = t;
+        }
+      }
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error !== "no-speech") {
+        console.error("Speech error:", event.error);
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if still in live mode
+      if (recognitionRef.current) {
+        try { recognitionRef.current.start(); } catch(e) {}
+      }
+    };
+
+    recognition.start();
+    recognitionRef.current = recognition;
+    setLiveListening(true);
+
+    // Start periodic legal checks every 20 seconds
+    liveCheckTimerRef.current = setInterval(() => {
+      checkLegalAlerts();
+    }, 20000);
+  };
+
+  const stopLiveAssist = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null; // Prevent auto-restart
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    if (liveCheckTimerRef.current) {
+      clearInterval(liveCheckTimerRef.current);
+      liveCheckTimerRef.current = null;
+    }
+    setLiveListening(false);
+  };
+
+  const checkLegalAlerts = async () => {
+    // Get current live text from DOM since state might be stale in interval
+    const textEl = document.getElementById("live-text-content");
+    const currentText = textEl ? textEl.textContent : "";
+    if (!currentText || currentText.length < 30 || currentText === lastCheckedRef.current) return;
+
+    lastCheckedRef.current = currentText;
+    setLiveChecking(true);
+    try {
+      const fd = new FormData();
+      fd.append("text", currentText);
+      const res = await fetch(`${API}/analyze-legal`, { method: "POST", body: fd });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.alerts && data.alerts.length > 0) {
+          setLiveAlerts(prev => [...data.alerts.map(a => ({...a, id: Date.now() + Math.random(), time: new Date().toLocaleTimeString("ru-RU", {hour:"2-digit", minute:"2-digit"})})), ...prev]);
+        }
+      }
+    } catch(e) {}
+    finally { setLiveChecking(false); }
+  };
+
+  const dismissAlert = (id) => {
+    setLiveAlerts(prev => prev.filter(a => a.id !== id));
+  };
+
+  const transferToEditor = () => {
+    setText(liveText);
+    setLiveMode(false);
+    stopLiveAssist();
+    setView("editor");
+  };
+
+  const getPlaceholder = () => {
+    if (isDiary) return "Введите данные пациента:\n\n1. ФИО, возраст\n2. Диагноз (МКБ-10)\n3. Текущая терапия\n4. Анамнез (кратко)\n5. Текущее состояние";
+    if (isUzi) return "Диктуйте результаты УЗ-исследования:\n\nНазовите ФИО пациента, затем описывайте каждый орган — размеры, структуру, эхогенность, наличие образований, сосудистый рисунок. В конце — заключение.";
+    if (spec === "psychiatrist" || spec === "psychiatrist_stac") return "Диктуйте осмотр пациента:\n\nЖалобы, анамнез жизни, анамнез заболевания, психический статус (сознание, ориентировка, мышление, восприятие, эмоции, критика), соматический и неврологический статус, диагноз, назначения.";
+    if (spec === "therapist") return "Диктуйте приём пациента:\n\nЖалобы (локализация, характер, длительность), анамнез заболевания, анамнез жизни, объективный осмотр (АД, ЧСС, аускультация, пальпация), данные обследований, диагноз, назначения.";
+    if (spec === "neurologist") return "Диктуйте осмотр пациента:\n\nЖалобы, анамнез. Неврологический статус: черепные нервы (I–XII), двигательная сфера, рефлексы, чувствительность, координация, менингеальные симптомы. Данные МРТ/КТ. Диагноз, лечение.";
+    if (spec === "cardiologist") return "Диктуйте приём:\n\nЖалобы (боли, одышка, отёки), анамнез. Осмотр: АД на обеих руках, ЧСС, пульс, аускультация (тоны, шумы), перкуссия. Данные ЭКГ, ЭхоКГ. Диагноз, назначения.";
+    if (spec === "surgeon") return "Диктуйте осмотр:\n\nЖалобы, анамнез. Status localis: локализация, размеры, консистенция, болезненность, состояние кожи. Живот: перитонеальные симптомы. Диагноз, тактика лечения.";
+    return "Диктуйте или вставьте текст приёма:\n\nЖалобы пациента, анамнез заболевания, анамнез жизни, данные осмотра, результаты обследований, диагноз, назначения.";
+  };
+
+  const renderOnboarding = () => (
+    <div className="onboarding card">
+      <div className="onboarding-title">Как это работает</div>
+      <div className="onboarding-steps">
+        <div className="onboarding-step">
+          <div className="step-num">1</div>
+          <div className="step-text"><span className="step-bold">Выберите специальность</span> и шаблон документа (если есть)</div>
+        </div>
+        <div className="onboarding-step">
+          <div className="step-num">2</div>
+          <div className="step-text"><span className="step-bold">Запишите приём</span> через микрофон, загрузите аудио или вставьте текст</div>
+        </div>
+        <div className="onboarding-step">
+          <div className="step-num">3</div>
+          <div className="step-text"><span className="step-bold">Получите документ</span> — скопируйте в МИС или скачайте Word</div>
+        </div>
+      </div>
+      <div className="onboarding-tips">
+        <div className="section-label" style={{marginTop: 12}}>Советы для лучшего результата</div>
+        <div className="tip-text">Называйте ФИО и возраст пациента в начале записи</div>
+        <div className="tip-text">Диктуйте структурно: жалобы → анамнез → осмотр → диагноз → назначения</div>
+        <div className="tip-text">Числовые значения (АД, ЧСС, размеры) произносите чётко</div>
+        <div className="tip-text">Для УЗИ — описывайте каждый орган отдельно</div>
+      </div>
+    </div>
+  );
+
   const getHint = () => {
     if (source === "mic") {
       if (transcribing) return "Распознаю запись...";
@@ -476,11 +622,97 @@ export default function App() {
             <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
             <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент врача</div></div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              {records.length > 0 && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" || view === "tpl-preview" ? "editor" : "history")}>{view === "history" || view === "detail" || view === "tpl-preview" ? "← Назад" : `Пациенты (${records.length})`}</div>}
+              {records.length > 0 && !liveMode && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" || view === "tpl-preview" ? "editor" : "history")}>{view === "history" || view === "detail" || view === "tpl-preview" ? "← Назад" : `Пациенты (${records.length})`}</div>}
             </div>
           </div>
 
-          {view === "editor" && (
+          {/* Mode tabs */}
+          <div className="card" style={{padding: "12px 16px"}}>
+            <div className="tabs">
+              <div className={`tab ${!liveMode ? "active" : ""}`} onClick={() => { setLiveMode(false); stopLiveAssist(); setView("editor"); }}>Документация</div>
+              <div className={`tab ${liveMode ? "active" : ""}`} onClick={() => { setLiveMode(true); setView("editor"); }}>Живой ассистент</div>
+            </div>
+          </div>
+
+          {/* ═══ LIVE ASSIST MODE ═══ */}
+          {liveMode && (
+            <>
+              <div className="card live-card">
+                <div className="live-header">
+                  <div>
+                    <div className="live-title">{liveListening ? "Слушаю приём..." : "Живой ассистент"}</div>
+                    <div className="live-sub">{liveListening ? "Говорите — текст появится автоматически" : "Нажмите «Начать» для записи приёма"}</div>
+                  </div>
+                  {liveChecking && <span className="live-check-dot" />}
+                </div>
+
+                <div className="live-controls">
+                  {!liveListening ? (
+                    <button className="cta" onClick={startLiveAssist}>Начать приём</button>
+                  ) : (
+                    <button className="cta live-stop-btn" onClick={stopLiveAssist}>Остановить</button>
+                  )}
+                </div>
+
+                {liveText && (
+                  <div className="live-transcript" id="live-text-content">
+                    {liveText}
+                  </div>
+                )}
+
+                {liveText && !liveListening && (
+                  <div className="live-actions">
+                    <button className="tpl-preview-btn" onClick={transferToEditor}>Создать документ из записи</button>
+                    <button className="tpl-delete-btn" onClick={() => { setLiveText(""); setLiveAlerts([]); }}>Очистить</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Alerts */}
+              {liveAlerts.length > 0 && (
+                <div className="live-alerts">
+                  {liveAlerts.map(a => (
+                    <div key={a.id} className={`live-alert live-alert-${a.level}`}>
+                      <div className="alert-icon">{a.level === "danger" ? "!!" : a.level === "warning" ? "!" : "i"}</div>
+                      <div className="alert-body">
+                        <div className="alert-title">{a.title}</div>
+                        <div className="alert-action">{a.action}</div>
+                        <div className="alert-law">{a.law} · {a.time}</div>
+                      </div>
+                      <button className="alert-dismiss" onClick={() => dismissAlert(a.id)}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!liveListening && !liveText && (
+                <div className="card">
+                  <div className="onboarding-title">Как это работает</div>
+                  <div className="onboarding-steps">
+                    <div className="onboarding-step">
+                      <div className="step-num">1</div>
+                      <div className="step-text"><span className="step-bold">Нажмите «Начать приём»</span> — программа начнёт слушать разговор</div>
+                    </div>
+                    <div className="onboarding-step">
+                      <div className="step-num">2</div>
+                      <div className="step-text"><span className="step-bold">Ведите приём как обычно</span> — текст разговора появляется на экране в реальном времени</div>
+                    </div>
+                    <div className="onboarding-step">
+                      <div className="step-num">3</div>
+                      <div className="step-text"><span className="step-bold">Следите за алертами</span> — если пациент скажет что-то юридически важное, появится предупреждение с указанием статьи закона</div>
+                    </div>
+                    <div className="onboarding-step">
+                      <div className="step-num">4</div>
+                      <div className="step-text"><span className="step-bold">После приёма</span> — нажмите «Создать документ» и текст автоматически перенесётся в редактор</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ═══ DOCUMENTATION MODE ═══ */}
+          {!liveMode && view === "editor" && (
             <>
               {/* Specialty selector */}
               <div className="card">
@@ -579,7 +811,11 @@ export default function App() {
                     {text && <button onClick={clear} className="clear-btn">Очистить</button>}
                   </div>
                 </div>
-                <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={isDiary ? "Введите данные пациента:\n\n1. ФИО, возраст\n2. Диагноз\n3. Терапия\n4. Анамнез\n5. Состояние" : isUzi ? "Диктуйте или вставьте описание УЗ-исследования..." : "Вставьте текст записи или используйте запись голоса..."} />
+                <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={getPlaceholder()} />
+              </div>
+
+              {/* Onboarding — shows when no text and no result */}
+              {!text.trim() && !result && !rec && !transcribing && renderOnboarding()}
               </div>
 
               {/* CTA buttons */}
@@ -639,7 +875,10 @@ export default function App() {
                     )}
                   </div>
                 ) : (
-                  !saved ? <button onClick={saveRecord} className="save-btn">Сохранить в историю</button> : <div className="saved-msg">✓ Сохранено</div>
+                  <>
+                    <div className="disclaimer">Документ сформирован ИИ-ассистентом. Проверьте данные перед использованием.</div>
+                    {!saved ? <button onClick={saveRecord} className="save-btn">Сохранить в историю</button> : <div className="saved-msg">✓ Сохранено</div>}
+                  </>
                 )}
               </div>)}
             </>
