@@ -816,7 +816,6 @@ export default function App() {
 
               {/* Onboarding — shows when no text and no result */}
               {!text.trim() && !result && !rec && !transcribing && renderOnboarding()}
-              </div>
 
               {/* CTA buttons */}
               <div className="cta-group">
