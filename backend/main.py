@@ -97,6 +97,81 @@ def init_db():
 
 init_db()
 
+# ─── Auto-import built-in templates ───
+
+BUILTIN_TEMPLATES = {
+    "uzi_abdominal.docx": {"name": "УЗИ органов брюшной полости", "specialty": "УЗИ"},
+    "uzi_kidneys.docx": {"name": "УЗИ почек", "specialty": "УЗИ"},
+    "uzi_breast.docx": {"name": "УЗИ молочных желёз", "specialty": "УЗИ"},
+    "uzi_thyroid.docx": {"name": "УЗИ щитовидной железы", "specialty": "УЗИ"},
+    "uzi_gynecology_ta.docx": {"name": "Гинекология (ТА)", "specialty": "УЗИ"},
+    "uzi_gynecology_tavs.docx": {"name": "Гинекология (ТА+ТВ)", "specialty": "УЗИ"},
+    "uzi_gynecology_tavs_early.docx": {"name": "Гинекология ТА+ТВ (ранний срок)", "specialty": "УЗИ"},
+    "uzi_gynecology_tavs_extended.docx": {"name": "Гинекология ТА+ТВ (расширенное)", "specialty": "УЗИ"},
+    "uzi_gynecology_pregnancy_early.docx": {"name": "Гинекология (беременность ранний срок)", "specialty": "УЗИ"},
+    "uzi_gynecology_mindray.docx": {"name": "Гинекология ТА+ТВ (MINDRAY)", "specialty": "УЗИ"},
+    "uzi_pregnancy_late.docx": {"name": "УЗИ беременность (поздний срок)", "specialty": "УЗИ"},
+    "uzi_arteries_upper.docx": {"name": "Дуплекс артерий верхних конечностей", "specialty": "УЗИ"},
+    "uzi_arteries_lower.docx": {"name": "Дуплекс артерий нижних конечностей", "specialty": "УЗИ"},
+    "uzi_veins_upper.docx": {"name": "Дуплекс вен верхних конечностей", "specialty": "УЗИ"},
+    "uzi_veins_lower.docx": {"name": "Дуплекс вен нижних конечностей", "specialty": "УЗИ"},
+    "uzi_knee.docx": {"name": "УЗИ коленных суставов", "specialty": "УЗИ"},
+    "traumatologist_exam.docx": {"name": "Осмотр травматолога-ортопеда", "specialty": "Травматолог"},
+    "psychiatrist_primary_exam.docx": {"name": "Первичный осмотр (психиатр стационар)", "specialty": "Психиатр"},
+}
+
+
+def import_builtin_templates():
+    """Импортирует встроенные шаблоны из папки templates/ при первом запуске."""
+    import logging
+    logger = logging.getLogger("pisar")
+
+    templates_dir = pathlib.Path(__file__).parent / "templates"
+    if not templates_dir.exists():
+        logger.info("No templates directory found, skipping import")
+        return
+
+    conn = get_db()
+    existing = {r["name"] for r in conn.execute("SELECT name FROM templates WHERE user_id = '__builtin__'").fetchall()}
+
+    imported = 0
+    for filename, info in BUILTIN_TEMPLATES.items():
+        if info["name"] in existing:
+            continue
+
+        filepath = templates_dir / filename
+        if not filepath.exists():
+            logger.warning(f"Template file not found: {filename}")
+            continue
+
+        with open(filepath, "rb") as f:
+            docx_data = f.read()
+
+        # Extract sections
+        try:
+            sections = extract_sections_from_docx(docx_data)
+        except Exception as e:
+            logger.warning(f"Failed to parse {filename}: {e}")
+            continue
+
+        tpl_id = str(uuid.uuid4())[:8]
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        conn.execute(
+            "INSERT INTO templates (id, user_id, name, specialty, sections_schema, docx_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tpl_id, "__builtin__", info["name"], info["specialty"], json.dumps(sections, ensure_ascii=False), docx_data, now),
+        )
+        imported += 1
+        logger.info(f"Imported template: {info['name']} ({len(sections)} sections)")
+
+    conn.commit()
+    conn.close()
+    if imported:
+        logger.info(f"Imported {imported} built-in templates")
+
+
+# Import after extract_sections_from_docx is defined (called later at startup)
+
 # OpenRouter API
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = "anthropic/claude-sonnet-4"
@@ -1085,14 +1160,13 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
         patient_name_ai = ai_data.get("patient_name", "")
         diagnosis_code_ai = ai_data.get("diagnosis_code", "")
 
-        # Строим маппинг: нормализованный ключ → значение
+        # Строим маппинг: ТОЛЬКО section-scoped ключи (без коротких — они вызывают перемешивание)
         norm_values = {}
         for k, v in values.items():
-            # "ПЕЧЕНЬ > Размеры" → "размеры", "печень > размеры", etc
-            norm_values[k.lower().strip()] = v
+            k_lower = k.lower().strip()
+            norm_values[k_lower] = v
+            # Нормализуем разделитель
             if " > " in k:
-                parts = k.split(" > ")
-                norm_values[parts[-1].lower().strip()] = v
                 norm_values[k.replace(" > ", ".").lower().strip()] = v
 
         # Заполняем шаблон — построчно заменяем значения после двоеточий
@@ -1112,14 +1186,12 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
 
                 if ":" in stripped:
                     key_part = stripped.split(":")[0].strip()
-                    full_key = f"{sec['title']} > {key_part}"
-
-                    # Ищем значение по нескольким вариантам ключа
+                    
+                    # Ищем ТОЛЬКО по полному ключу с секцией — не по короткому
                     matched_value = None
                     search_keys = [
-                        full_key.lower(),
-                        key_part.lower(),
-                        f"{sec['title'].lower()}.{key_part.lower()}",
+                        f"{sec['title']} > {key_part}".lower(),
+                        f"{sec['title']}.{key_part}".lower(),
                         f"{sec['title'].lower()} > {key_part.lower()}",
                     ]
                     for sk in search_keys:
@@ -1128,7 +1200,6 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
                             break
 
                     if matched_value is not None:
-                        # Сохраняем отступы оригинала + ключ + новое значение
                         leading_spaces = len(line) - len(line.lstrip())
                         prefix = line[:leading_spaces] + key_part + ": "
                         filled_lines.append(prefix + str(matched_value))
@@ -1258,6 +1329,10 @@ def extract_sections_from_docx(content: bytes) -> list:
         sections.append({"title": current_title, "template_text": full_text})
 
     return sections
+
+
+# Run auto-import now that extract_sections_from_docx is defined
+import_builtin_templates()
 
 
 @app.post("/templates")
@@ -1595,53 +1670,76 @@ async def export_word(
         if row and row["docx_data"]:
             doc = DocxDocument(io.BytesIO(row["docx_data"]))
 
-            # Build values map from sections_data (AI result)
-            all_values = {}
+            # Build SECTION-SCOPED values map: {"печень": {"расположение": "...", "размеры": "..."}, ...}
+            scoped_values = {}
+            conclusion_text = ""
             for sec in sections_data:
+                sec_title = sec.get("title", "").strip().lower()
                 content = sec.get("content", "")
                 if not content:
                     continue
+
+                scoped_values[sec_title] = {}
                 for line in content.split("\n"):
                     line = line.strip()
-                    if ":" in line and len(line) > 5:
+                    if not line or len(line) < 5:
+                        continue
+                    if ":" in line:
                         key = line.split(":")[0].strip().lower()
                         val = ":".join(line.split(":")[1:]).strip()
                         if key and val:
-                            all_values[key] = val
+                            scoped_values[sec_title][key] = val
 
-            # Also extract conclusion
-            conclusion_text = ""
-            for sec in sections_data:
-                c = sec.get("content", "")
-                if "ЗАКЛЮЧЕНИЕ" in c:
-                    idx = c.index("ЗАКЛЮЧЕНИЕ")
-                    conclusion_text = c[idx:].split(":", 1)[-1].strip() if ":" in c[idx:] else ""
+                # Extract conclusion
+                if "заключение" in content.lower():
+                    for line in content.split("\n"):
+                        if "ЗАКЛЮЧЕНИЕ" in line and ":" in line:
+                            conclusion_text = line.split(":", 1)[1].strip()
 
-            # Walk through original docx paragraphs and replace values
+            # Detect section headers in docx (bold short paragraphs like "ПЕЧЕНЬ:", "ЖЕЛЧНЫЙ ПУЗЫРЬ:")
+            section_headers = set()
             for p in doc.paragraphs:
                 text = p.text.strip()
-                if not text or ":" not in text:
+                if text and len(text) < 60 and p.runs and all(r.bold for r in p.runs if r.text.strip()):
+                    section_headers.add(text.rstrip(":").strip().lower())
+
+            # Walk through paragraphs, tracking current section
+            current_section = ""
+            for p in doc.paragraphs:
+                text = p.text.strip()
+                if not text:
+                    continue
+
+                # Detect section change
+                text_norm = text.rstrip(":").strip().lower()
+                if text_norm in section_headers:
+                    current_section = text_norm
+                    continue
+
+                # Skip if no current section or no colon
+                if ":" not in text:
                     continue
 
                 key_part = text.split(":")[0].strip().lower()
 
-                # Check if we have a replacement
-                matched_val = all_values.get(key_part)
-                if not matched_val:
-                    # Try partial match
-                    for k, v in all_values.items():
-                        if k == key_part or key_part.endswith(k) or k.endswith(key_part):
-                            matched_val = v
+                # Look up value in current section first, then global
+                matched_val = None
+                if current_section and current_section in scoped_values:
+                    matched_val = scoped_values[current_section].get(key_part)
+
+                # Fallback: try other sections (but only if key is unique enough)
+                if not matched_val and len(key_part) > 15:
+                    for sec_vals in scoped_values.values():
+                        if key_part in sec_vals:
+                            matched_val = sec_vals[key_part]
                             break
 
                 if matched_val:
-                    # Replace value after colon, preserving formatting
-                    # Find the colon position in runs
+                    # Replace value after colon in runs, preserving formatting
                     colon_found = False
-                    char_count = 0
-                    for run_idx, run in enumerate(p.runs):
+                    for run in p.runs:
                         if colon_found:
-                            run.text = ""  # Clear all runs after colon
+                            run.text = ""
                         elif ":" in run.text:
                             colon_pos = run.text.index(":")
                             run.text = run.text[:colon_pos + 1] + " " + matched_val
@@ -1650,10 +1748,9 @@ async def export_word(
                 # Replace ЗАКЛЮЧЕНИЕ
                 if "ЗАКЛЮЧЕНИЕ" in text and conclusion_text:
                     for run in p.runs:
-                        if "ЗАКЛЮЧЕНИЕ" in run.text:
-                            colon_pos = run.text.index(":") if ":" in run.text else -1
-                            if colon_pos >= 0:
-                                run.text = run.text[:colon_pos + 1] + " " + conclusion_text
+                        if "ЗАКЛЮЧЕНИЕ" in run.text and ":" in run.text:
+                            colon_pos = run.text.index(":")
+                            run.text = run.text[:colon_pos + 1] + " " + conclusion_text
                             break
 
                 # Replace template variables
@@ -1662,15 +1759,14 @@ async def export_word(
                         if "{{PatFIO}}" in run.text:
                             run.text = run.text.replace("{{PatFIO}}", patient_name)
 
-            # Also replace in tables
+            # Replace in tables too
             for table in doc.tables:
                 for tbl_row in table.rows:
                     for cell in tbl_row.cells:
-                        if patient_name and "{{PatFIO}}" in cell.text:
-                            for p in cell.paragraphs:
-                                for run in p.runs:
-                                    if "{{PatFIO}}" in run.text:
-                                        run.text = run.text.replace("{{PatFIO}}", patient_name)
+                        for p in cell.paragraphs:
+                            for run in p.runs:
+                                if patient_name and "{{PatFIO}}" in run.text:
+                                    run.text = run.text.replace("{{PatFIO}}", patient_name)
 
             buffer = io.BytesIO()
             doc.save(buffer)
