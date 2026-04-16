@@ -99,6 +99,24 @@ function SectionCard({ title, content, idx, showHints, onContentChange }) {
   );
 }
 
+function HamburgerMenu({ onSnippets, onSession, sessionLabel, onLogout }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="hamburger-wrap">
+      <button className="hamburger-btn" onClick={() => setOpen(o => !o)}>
+        <span /><span /><span />
+      </button>
+      {open && (
+        <div className="hamburger-menu" onClick={() => setOpen(false)}>
+          <div className="hamburger-item" onClick={onSnippets}>⚡ Быстрые фразы</div>
+          <div className="hamburger-item" onClick={onSession}>📡 {sessionLabel}</div>
+          <div className="hamburger-item hamburger-logout" onClick={onLogout}>← Выйти</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PatientItem({ record, onClick }) {
   return (
     <div className="patient-row" onClick={onClick}>
@@ -809,13 +827,22 @@ export default function App() {
           <div className="header">
             <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
             <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">{user.name}</div></div>
-            <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              <div className="header-badge" onClick={() => setShowSnipManager(true)}>Быстрые фразы</div>
-              <div className="header-badge session-badge" onClick={() => setView(view === "session" ? "editor" : "session")}>
-                {view === "session" ? "← Назад" : "Сессия"}
+            <div className="header-actions">
+              {/* Десктоп: показываем все кнопки */}
+              <div className="header-badges-desktop">
+                <div className="header-badge" onClick={() => setShowSnipManager(true)}>Быстрые фразы</div>
+                <div className="header-badge session-badge" onClick={() => setView(view === "session" ? "editor" : "session")}>
+                  {view === "session" ? "← Назад" : "Сессия"}
+                </div>
+                <div className="header-badge" onClick={logout}>Выйти</div>
               </div>
-              <div className="header-badge" onClick={logout}>Выйти</div>
-            </div>
+              {/* Мобильный: гамбургер */}
+              <HamburgerMenu
+                onSnippets={() => setShowSnipManager(true)}
+                onSession={() => setView(view === "session" ? "editor" : "session")}
+                sessionLabel={view === "session" ? "← Назад" : "Сессия"}
+                onLogout={logout}
+              />
           </div>
 
           {/* Mode tabs */}

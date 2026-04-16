@@ -352,3 +352,22 @@ textarea::placeholder { color: var(--gray-400); }
 .session-phone-hint { font-size: 12px; color: var(--gray-400); margin-top: 6px; text-align: center; }
 .session-live-text { min-height: 150px; padding: 14px; background: var(--gray-50); border-radius: var(--radius-sm); font-size: 14px; line-height: 1.6; color: var(--gray-800); white-space: pre-wrap; margin-top: 8px; border: 1px solid var(--gray-200); }
 .session-badge { background: rgba(255,255,255,0.25) !important; }
+
+/* ─── Header adaptive ─── */
+.header-actions { display: flex; align-items: center; }
+.header-badges-desktop { display: flex; gap: 8px; align-items: center; }
+.hamburger-wrap { display: none; position: relative; }
+
+/* Мобильный: скрываем кнопки, показываем гамбургер */
+@media (max-width: 540px) {
+  .header-badges-desktop { display: none; }
+  .hamburger-wrap { display: block; }
+}
+
+.hamburger-btn { background: rgba(255,255,255,0.2); border: none; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.hamburger-btn span { display: block; width: 18px; height: 2px; background: white; border-radius: 2px; }
+.hamburger-menu { position: absolute; right: 0; top: calc(100% + 8px); background: white; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.18); min-width: 180px; z-index: 999; overflow: hidden; animation: fadeUp 0.15s ease; }
+.hamburger-item { padding: 14px 18px; font-size: 14px; font-weight: 500; color: var(--gray-800); cursor: pointer; border-bottom: 1px solid var(--gray-100); transition: background 0.12s; }
+.hamburger-item:last-child { border-bottom: none; }
+.hamburger-item:hover { background: var(--gray-50); }
+.hamburger-logout { color: #ef4444; }
