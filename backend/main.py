@@ -115,6 +115,12 @@ async def computer_ws(websocket: WebSocket, code: str):
         return
     await websocket.accept()
     session["computer"] = websocket
+    # Уведомляем телефон что компьютер подключился
+    if session["phone"]:
+        try:
+            await session["phone"].send_text(json.dumps({"type": "computer_connected"}))
+        except Exception:
+            pass
     # Сразу отправляем накопленный текст если есть
     if session["text"]:
         await websocket.send_text(json.dumps({"type": "text", "text": session["text"]}))

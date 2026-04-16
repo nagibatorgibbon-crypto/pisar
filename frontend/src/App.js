@@ -469,7 +469,11 @@ export default function App() {
   };
 
   // ─── Session functions ───
-  const WS_BASE = API.replace("https://", "wss://").replace("http://", "ws://");
+  const WS_BASE = (() => {
+    if (API) return API.replace("https://", "wss://").replace("http://", "ws://");
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}`;
+  })();
 
   const createSession = async () => {
     try {
@@ -488,17 +492,22 @@ export default function App() {
   };
 
   const connectSessionWs = (role, code) => {
-    const ws = new WebSocket(`${WS_BASE}/ws/${role}/${code}`);
+    const url = `${WS_BASE}/ws/${role}/${code}`;
+    console.log("Connecting WebSocket:", url);
+    const ws = new WebSocket(url);
     sessionWsRef.current = ws;
-    ws.onopen = () => setSessionConnected(true);
+    ws.onopen = () => { console.log("WS connected"); setSessionConnected(true); };
+    ws.onerror = (e) => { console.error("WS error", e); setErr("WebSocket ошибка — проверьте соединение"); };
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "text") {
         setSessionText(msg.text);
         if (role === "computer") setText(msg.text);
+      } else if (msg.type === "connected" || msg.type === "computer_connected") {
+        setSessionConnected(true);
       }
     };
-    ws.onclose = () => { setSessionConnected(false); };
+    ws.onclose = (e) => { console.log("WS closed", e.code, e.reason); setSessionConnected(false); };
   };
 
   const sendSessionText = (t) => {
