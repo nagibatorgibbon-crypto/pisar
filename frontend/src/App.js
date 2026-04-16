@@ -56,18 +56,45 @@ const DEMOS = {
 const MicIcon = () => (<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3.5" fill="currentColor"/><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.2"/></svg>);
 const UploadIcon = () => (<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 10V3M5.5 5.5L8 3l2.5 2.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/><path d="M3 12h10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>);
 
-function SectionCard({ title, content, idx, showHints }) {
+// ─── Default snippets ───
+const DEFAULT_SNIPPETS = [
+  { id: "s1", label: "Сознание ясное", text: "Сознание формально не помрачено. Ориентирован в месте, времени и собственной личности верно." },
+  { id: "s2", label: "Психостатус норма", text: "Контакт продуктивен. Речь нормального темпа, по существу. Мышление последовательное, целенаправленное. Бредовых идей не высказывает. Обманы восприятия отрицает. Настроение ровное. Критика к состоянию сохранена." },
+  { id: "s3", label: "Сон и аппетит норма", text: "Сон достаточный, засыпает хорошо, пробуждений нет. Аппетит достаточный." },
+  { id: "s4", label: "Без суицидальных мыслей", text: "Суицидальные мысли и намерения отрицает. Агрессивных тенденций не выявлено." },
+  { id: "s5", label: "Соматика без особенностей", text: "Соматически без острой патологии. АД в норме. ЧСС в норме. Жалоб соматического характера не предъявляет." },
+  { id: "s6", label: "Назначения продолжить", text: "Терапию продолжить в прежних дозировках. Коррекция лечения не проводилась." },
+];
+
+function SectionCard({ title, content, idx, showHints, onContentChange }) {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editVal, setEditVal] = useState(content);
   const isMissing = showHints && (!content || content === "Данные не предоставлены" || content.trim() === "");
   const copy = () => { navigator.clipboard.writeText(`${title}\n${content}`); setCopied(true); setTimeout(() => setCopied(false), 1500); };
+  const saveEdit = () => { onContentChange && onContentChange(idx, editVal); setEditing(false); };
+  const cancelEdit = () => { setEditVal(content); setEditing(false); };
   return (
     <div className={`sec-card ${isMissing ? "sec-missing" : ""}`} style={{ animationDelay: `${idx * 0.06}s` }}>
       <div className="sec-head">
         <h3 className="sec-title">{isMissing && <span className="missing-dot">!</span>}{title}</h3>
-        <button onClick={copy} className={`sec-copy ${copied ? "ok" : ""}`}>{copied ? "\u2713" : "Копировать"}</button>
+        <div className="sec-actions">
+          {!editing && <button onClick={() => { setEditVal(content); setEditing(true); }} className="sec-edit-btn">✏️</button>}
+          <button onClick={copy} className={`sec-copy ${copied ? "ok" : ""}`}>{copied ? "\u2713" : "Копировать"}</button>
+        </div>
       </div>
-      <p className="sec-text">{content}</p>
-      {isMissing && <div className="missing-hint">Врач не предоставил данные для этого раздела</div>}
+      {editing ? (
+        <div className="sec-edit-area">
+          <textarea className="sec-edit-input" value={editVal} onChange={e => setEditVal(e.target.value)} autoFocus />
+          <div className="sec-edit-btns">
+            <button className="sec-edit-save" onClick={saveEdit}>✓ Сохранить</button>
+            <button className="sec-edit-cancel" onClick={cancelEdit}>Отмена</button>
+          </div>
+        </div>
+      ) : (
+        <p className="sec-text">{content}</p>
+      )}
+      {isMissing && !editing && <div className="missing-hint">Врач не предоставил данные для этого раздела</div>}
     </div>
   );
 }
@@ -119,6 +146,41 @@ export default function App() {
   const [diaryPatientId, setDiaryPatientId] = useState("");
   const [diarySaving, setDiarySaving] = useState(false);
   const [diarySaved, setDiarySaved] = useState(false);
+
+  // Snippets
+  const [snippets, setSnippets] = useState(() => {
+    try { const s = localStorage.getItem("pisar_snippets"); return s ? JSON.parse(s) : DEFAULT_SNIPPETS; } catch { return DEFAULT_SNIPPETS; }
+  });
+  const [showSnippets, setShowSnippets] = useState(false);
+  const [snippetTarget, setSnippetTarget] = useState(null); // idx of section to insert into
+  const [newSnipLabel, setNewSnipLabel] = useState("");
+  const [newSnipText, setNewSnipText] = useState("");
+  const [showSnipManager, setShowSnipManager] = useState(false);
+
+  const saveSnippets = (arr) => { setSnippets(arr); localStorage.setItem("pisar_snippets", JSON.stringify(arr)); };
+  const addSnippet = () => {
+    if (!newSnipLabel.trim() || !newSnipText.trim()) return;
+    const arr = [...snippets, { id: `u_${Date.now()}`, label: newSnipLabel.trim(), text: newSnipText.trim() }];
+    saveSnippets(arr); setNewSnipLabel(""); setNewSnipText("");
+  };
+  const deleteSnippet = (id) => saveSnippets(snippets.filter(s => s.id !== id));
+
+  // Edit section content
+  const handleSectionEdit = (idx, newContent) => {
+    if (!result) return;
+    const newSections = result.sections.map((s, i) => i === idx ? { ...s, content: newContent } : s);
+    setResult({ ...result, sections: newSections });
+  };
+
+  // Insert snippet into section
+  const insertSnippet = (sectionIdx, snippetText) => {
+    if (!result) return;
+    const sec = result.sections[sectionIdx];
+    const current = sec?.content || "";
+    const joined = current && current !== "Данные не предоставлены" ? current + " " + snippetText : snippetText;
+    handleSectionEdit(sectionIdx, joined);
+    setShowSnippets(false); setSnippetTarget(null);
+  };
   const [templates, setTemplates] = useState([]);
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [tplUploading, setTplUploading] = useState(false);
@@ -590,7 +652,7 @@ export default function App() {
   };
   const handleHintClick = () => { if (source === "mic") { rec ? stopRec() : startRec(); } else { if (!uploading) fileRef.current?.click(); } };
 
-  const renderSections = (data, showHints = false) => (
+  const renderSections = (data, showHints = false, editable = false) => (
     <>
       {(data.patient_name || data.diagnosis_code) && (
         <div className="patient-bar card">
@@ -610,7 +672,16 @@ export default function App() {
         <div className="hints-banner">Разделы, отмеченные красным, не заполнены — врач не предоставил данные.</div>
       )}
       {data.summary && <div className="summary">{data.summary}</div>}
-      <div className="sections">{(data.sections || []).map((s, i) => <SectionCard key={i} title={s.title} content={s.content} idx={i} showHints={showHints} />)}</div>
+      <div className="sections">{(data.sections || []).map((s, i) => (
+        <div key={i}>
+          <SectionCard title={s.title} content={s.content} idx={i} showHints={showHints} onContentChange={editable ? handleSectionEdit : null} />
+          {editable && (
+            <button className="snip-insert-btn" onClick={() => { setSnippetTarget(i); setShowSnippets(true); }}>
+              + Вставить сниппет
+            </button>
+          )}
+        </div>
+      ))}</div>
     </>
   );
 
@@ -622,6 +693,7 @@ export default function App() {
             <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
             <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент врача</div></div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <div className="header-badge" onClick={() => setShowSnipManager(true)}>Сниппеты</div>
               {records.length > 0 && !liveMode && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" || view === "tpl-preview" ? "editor" : "history")}>{view === "history" || view === "detail" || view === "tpl-preview" ? "← Назад" : `Пациенты (${records.length})`}</div>}
             </div>
           </div>
@@ -834,7 +906,7 @@ export default function App() {
 
               {err && <div className="error">{err}</div>}
               {result && (<div className="result">
-                {renderSections(result, true)}
+                {renderSections(result, true, true)}
                 {!isDiary && !isUzi && (
                   <>
                     <button onClick={() => getDiagnosis()} disabled={diagLoading} className="diag-btn">
@@ -907,7 +979,7 @@ export default function App() {
                 </button>
               </div>
               {err && <div className="error">{err}</div>}
-              {result && (<div className="result">{renderSections(result, true)}{!saved ? <button onClick={saveRecord} className="save-btn">Сохранить</button> : <div className="saved-msg">✓ Сохранено</div>}</div>)}
+              {result && (<div className="result">{renderSections(result, true, true)}{!saved ? <button onClick={saveRecord} className="save-btn">Сохранить</button> : <div className="saved-msg">✓ Сохранено</div>}</div>)}
             </div>
           )}
 
@@ -953,6 +1025,52 @@ export default function App() {
           )}
 
           {loadingRecords && <div className="loading-overlay"><span className="spinner" /></div>}
+
+          {/* ─── Snippet insert modal ─── */}
+          {showSnippets && snippetTarget !== null && (
+            <div className="modal-overlay" onClick={() => { setShowSnippets(false); setSnippetTarget(null); }}>
+              <div className="modal-card" onClick={e => e.stopPropagation()}>
+                <div className="modal-title">Вставить сниппет</div>
+                <div className="modal-subtitle">в раздел: {result?.sections?.[snippetTarget]?.title}</div>
+                <div className="modal-list">
+                  {snippets.map(s => (
+                    <div key={s.id} className="snip-item" onClick={() => insertSnippet(snippetTarget, s.text)}>
+                      <div className="snip-label">{s.label}</div>
+                      <div className="snip-preview">{s.text.slice(0, 80)}...</div>
+                    </div>
+                  ))}
+                </div>
+                <button className="modal-cancel" onClick={() => { setShowSnippets(false); setSnippetTarget(null); }}>Отмена</button>
+              </div>
+            </div>
+          )}
+
+          {/* ─── Snippet manager modal ─── */}
+          {showSnipManager && (
+            <div className="modal-overlay" onClick={() => setShowSnipManager(false)}>
+              <div className="modal-card snip-manager" onClick={e => e.stopPropagation()}>
+                <div className="modal-title">Мои сниппеты</div>
+                <div className="snip-manager-list">
+                  {snippets.map(s => (
+                    <div key={s.id} className="snip-manager-item">
+                      <div className="snip-manager-info">
+                        <div className="snip-label">{s.label}</div>
+                        <div className="snip-preview">{s.text.slice(0, 60)}...</div>
+                      </div>
+                      <button className="snip-delete" onClick={() => deleteSnippet(s.id)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="snip-add-form">
+                  <div className="snip-add-title">Добавить сниппет</div>
+                  <input className="auth-input" placeholder="Название (например: Сознание ясное)" value={newSnipLabel} onChange={e => setNewSnipLabel(e.target.value)} />
+                  <textarea className="sec-edit-input" placeholder="Текст сниппета..." value={newSnipText} onChange={e => setNewSnipText(e.target.value)} style={{minHeight:80}} />
+                  <button className="modal-confirm" onClick={addSnippet} disabled={!newSnipLabel.trim() || !newSnipText.trim()}>Добавить</button>
+                </div>
+                <button className="modal-cancel" onClick={() => setShowSnipManager(false)}>Закрыть</button>
+              </div>
+            </div>
+          )}
 
           {showDiaryModal && (
             <div className="modal-overlay" onClick={() => setShowDiaryModal(false)}>

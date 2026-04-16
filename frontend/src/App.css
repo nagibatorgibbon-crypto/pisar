@@ -304,3 +304,32 @@ textarea::placeholder { color: var(--gray-400); }
 .modal-confirm { flex: 2; padding: 11px; background: var(--green-500); color: white; border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 600; cursor: pointer; font-family: var(--font); display: flex; align-items: center; justify-content: center; gap: 8px; }
 .modal-confirm:hover:not(.off) { background: var(--green-600); }
 .modal-confirm.off { background: #86efac; cursor: not-allowed; }
+
+/* ─── Section edit ─── */
+.sec-actions { display: flex; gap: 6px; align-items: center; }
+.sec-edit-btn { background: none; border: none; cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; color: var(--gray-400); transition: color 0.15s; }
+.sec-edit-btn:hover { color: var(--green-500); }
+.sec-edit-area { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.sec-edit-input { width: 100%; min-height: 100px; padding: 10px 12px; border: 1.5px solid var(--green-400); border-radius: var(--radius-sm); font-size: 13px; font-family: var(--font); line-height: 1.5; resize: vertical; outline: none; box-sizing: border-box; }
+.sec-edit-btns { display: flex; gap: 8px; }
+.sec-edit-save { flex: 2; padding: 8px; background: var(--green-500); color: white; border: none; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font); }
+.sec-edit-save:hover { background: var(--green-600); }
+.sec-edit-cancel { flex: 1; padding: 8px; background: var(--gray-100); color: var(--gray-600); border: none; border-radius: var(--radius-sm); font-size: 13px; cursor: pointer; font-family: var(--font); }
+
+/* ─── Snippet insert button ─── */
+.snip-insert-btn { width: 100%; padding: 6px; background: none; border: 1px dashed var(--gray-300); border-radius: var(--radius-sm); font-size: 12px; color: var(--gray-400); cursor: pointer; font-family: var(--font); margin-bottom: 4px; transition: all 0.15s; }
+.snip-insert-btn:hover { border-color: var(--green-400); color: var(--green-500); background: #f0fdf4; }
+
+/* ─── Snippet modals ─── */
+.snip-item { padding: 10px 12px; border: 1.5px solid var(--gray-200); border-radius: var(--radius-sm); cursor: pointer; transition: all 0.15s; }
+.snip-item:hover { border-color: var(--green-400); background: #f0fdf4; }
+.snip-label { font-size: 13px; font-weight: 600; color: var(--gray-800); margin-bottom: 3px; }
+.snip-preview { font-size: 11px; color: var(--gray-500); line-height: 1.4; }
+.snip-manager { max-width: 480px; max-height: 90vh; overflow-y: auto; }
+.snip-manager-list { display: flex; flex-direction: column; gap: 6px; max-height: 250px; overflow-y: auto; }
+.snip-manager-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--gray-200); border-radius: var(--radius-sm); }
+.snip-manager-info { flex: 1; min-width: 0; }
+.snip-delete { background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 14px; padding: 4px; flex-shrink: 0; }
+.snip-delete:hover { color: #ef4444; }
+.snip-add-form { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--gray-200); padding-top: 12px; margin-top: 4px; }
+.snip-add-title { font-size: 13px; font-weight: 600; color: var(--gray-700); }
