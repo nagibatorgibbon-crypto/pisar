@@ -113,7 +113,37 @@ function PatientItem({ record, onClick }) {
 }
 
 export default function App() {
-  const authHeaders = {};
+  // ─── Auth state ───
+  const [user, setUser] = useState(() => { try { const u = localStorage.getItem("pisar_user"); return u ? JSON.parse(u) : null; } catch { return null; } });
+  const [token, setToken] = useState(() => localStorage.getItem("pisar_token") || "");
+  const [authView, setAuthView] = useState("login");
+  const [authLogin, setAuthLogin] = useState("");
+  const [authPass, setAuthPass] = useState("");
+  const [authName, setAuthName] = useState("");
+  const [authErr, setAuthErr] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const authHeaders = token ? { "Authorization": `Bearer ${token}` } : {};
+
+  const doAuth = async (endpoint) => {
+    setAuthErr(""); setAuthLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append("login", authLogin); fd.append("password", authPass);
+      if (endpoint === "/auth/register") fd.append("name", authName || authLogin);
+      const res = await fetch(`${API}${endpoint}`, { method: "POST", body: fd });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Ошибка"); }
+      const data = await res.json();
+      setToken(data.token); setUser(data.user);
+      localStorage.setItem("pisar_token", data.token);
+      localStorage.setItem("pisar_user", JSON.stringify(data.user));
+    } catch(e) { setAuthErr(e.message); } finally { setAuthLoading(false); }
+  };
+
+  const logout = () => {
+    setUser(null); setToken(""); setRecords([]);
+    localStorage.removeItem("pisar_token"); localStorage.removeItem("pisar_user");
+  };
 
   // ─── App state ───
   const [view, setView] = useState("editor");
@@ -257,7 +287,7 @@ export default function App() {
     }
   };
 
-  useEffect(() => { fetchRecords(); fetchTemplates(); }, []);
+  useEffect(() => { if (token) { fetchRecords(); fetchTemplates(); } }, [token]);
   const fetchRecords = async () => { try { const r = await fetch(`${API}/records`, { headers: authHeaders }); if (r.ok) setRecords(await r.json()); } catch(e){} };
   const fetchTemplates = async () => { try { const r = await fetch(`${API}/templates`, { headers: authHeaders }); if (r.ok) setTemplates(await r.json()); } catch(e){} };
 
@@ -749,106 +779,55 @@ export default function App() {
   return (
     <div className="app-wrap">
       <div className="app">
+        {!user ? (
+          // ═══ LOGIN SCREEN ═══
+          <>
+            <div className="header">
+              <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
+              <div><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент врача</div></div>
+            </div>
+            <div className="card">
+              <div className="section-label">{authView === "login" ? "Вход" : "Регистрация"}</div>
+              {authView === "register" && <input className="auth-input" placeholder="Имя врача" value={authName} onChange={e => setAuthName(e.target.value)} />}
+              <input className="auth-input" placeholder="Логин" value={authLogin} onChange={e => setAuthLogin(e.target.value)} />
+              <input className="auth-input" type="password" placeholder="Пароль" value={authPass}
+                onChange={e => setAuthPass(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && doAuth(authView === "login" ? "/auth/login" : "/auth/register")} />
+              {authErr && <div className="error" style={{marginTop:8}}>{authErr}</div>}
+              <button onClick={() => doAuth(authView === "login" ? "/auth/login" : "/auth/register")}
+                disabled={authLoading || !authLogin || !authPass}
+                className={`cta ${authLoading || !authLogin || !authPass ? "off" : ""}`} style={{marginTop:12}}>
+                {authLoading ? <><span className="spinner" />Загрузка...</> : authView === "login" ? "Войти" : "Зарегистрироваться"}
+              </button>
+              <div className="auth-switch" onClick={() => { setAuthView(authView === "login" ? "register" : "login"); setAuthErr(""); }}>
+                {authView === "login" ? "Нет аккаунта? Зарегистрироваться" : "Уже есть аккаунт? Войти"}
+              </div>
+            </div>
+          </>
+        ) : (
         <>
           <div className="header">
             <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
-            <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент врача</div></div>
+            <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">{user.name}</div></div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              <div className="header-badge" onClick={() => setShowSnipManager(true)}>Сниппеты</div>
+              <div className="header-badge" onClick={() => setShowSnipManager(true)}>Быстрые фразы</div>
               <div className="header-badge session-badge" onClick={() => setView(view === "session" ? "editor" : "session")}>
-                {view === "session" ? "← Назад" : "📱 Сессия"}
+                {view === "session" ? "← Назад" : "Сессия"}
               </div>
-              {records.length > 0 && !liveMode && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" || view === "tpl-preview" ? "editor" : "history")}>{view === "history" || view === "detail" || view === "tpl-preview" ? "← Назад" : `Пациенты (${records.length})`}</div>}
+              <div className="header-badge" onClick={logout}>Выйти</div>
             </div>
           </div>
 
           {/* Mode tabs */}
           <div className="card" style={{padding: "12px 16px"}}>
             <div className="tabs">
-              <div className={`tab ${!liveMode ? "active" : ""}`} onClick={() => { setLiveMode(false); stopLiveAssist(); setView("editor"); }}>Документация</div>
-              <div className={`tab ${liveMode ? "active" : ""}`} onClick={() => { setLiveMode(true); setView("editor"); }}>Живой ассистент</div>
+              <div className={`tab ${view !== "my-patients" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
+              <div className={`tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
             </div>
           </div>
 
-          {/* ═══ LIVE ASSIST MODE ═══ */}
-          {liveMode && (
-            <>
-              <div className="card live-card">
-                <div className="live-header">
-                  <div>
-                    <div className="live-title">{liveListening ? "Слушаю приём..." : "Живой ассистент"}</div>
-                    <div className="live-sub">{liveListening ? "Говорите — текст появится автоматически" : "Нажмите «Начать» для записи приёма"}</div>
-                  </div>
-                  {liveChecking && <span className="live-check-dot" />}
-                </div>
-
-                <div className="live-controls">
-                  {!liveListening ? (
-                    <button className="cta" onClick={startLiveAssist}>Начать приём</button>
-                  ) : (
-                    <button className="cta live-stop-btn" onClick={stopLiveAssist}>Остановить</button>
-                  )}
-                </div>
-
-                {liveText && (
-                  <div className="live-transcript" id="live-text-content">
-                    {liveText}
-                  </div>
-                )}
-
-                {liveText && !liveListening && (
-                  <div className="live-actions">
-                    <button className="tpl-preview-btn" onClick={transferToEditor}>Создать документ из записи</button>
-                    <button className="tpl-delete-btn" onClick={() => { setLiveText(""); setLiveAlerts([]); }}>Очистить</button>
-                  </div>
-                )}
-              </div>
-
-              {/* Alerts */}
-              {liveAlerts.length > 0 && (
-                <div className="live-alerts">
-                  {liveAlerts.map(a => (
-                    <div key={a.id} className={`live-alert live-alert-${a.level}`}>
-                      <div className="alert-icon">{a.level === "danger" ? "!!" : a.level === "warning" ? "!" : "i"}</div>
-                      <div className="alert-body">
-                        <div className="alert-title">{a.title}</div>
-                        <div className="alert-action">{a.action}</div>
-                        <div className="alert-law">{a.law} · {a.time}</div>
-                      </div>
-                      <button className="alert-dismiss" onClick={() => dismissAlert(a.id)}>×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {!liveListening && !liveText && (
-                <div className="card">
-                  <div className="onboarding-title">Как это работает</div>
-                  <div className="onboarding-steps">
-                    <div className="onboarding-step">
-                      <div className="step-num">1</div>
-                      <div className="step-text"><span className="step-bold">Нажмите «Начать приём»</span> — программа начнёт слушать разговор</div>
-                    </div>
-                    <div className="onboarding-step">
-                      <div className="step-num">2</div>
-                      <div className="step-text"><span className="step-bold">Ведите приём как обычно</span> — текст разговора появляется на экране в реальном времени</div>
-                    </div>
-                    <div className="onboarding-step">
-                      <div className="step-num">3</div>
-                      <div className="step-text"><span className="step-bold">Следите за алертами</span> — если пациент скажет что-то юридически важное, появится предупреждение с указанием статьи закона</div>
-                    </div>
-                    <div className="onboarding-step">
-                      <div className="step-num">4</div>
-                      <div className="step-text"><span className="step-bold">После приёма</span> — нажмите «Создать документ» и текст автоматически перенесётся в редактор</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
           {/* ═══ DOCUMENTATION MODE ═══ */}
-          {!liveMode && view === "editor" && (
+          {view !== "my-patients" && view === "editor" && (
             <>
               {/* Specialty selector */}
               <div className="card">
@@ -1106,6 +1085,18 @@ export default function App() {
             </div>
           )}
 
+          {view === "my-patients" && (
+            <div className="history">
+              <div className="card">
+                <div className="section-label">Мои пациенты</div>
+                {records.length === 0
+                  ? <div className="empty-history">Пока нет сохранённых пациентов. После структурирования нажмите «Сохранить» чтобы добавить пациента.</div>
+                  : <div className="patient-list">{records.map((r) => <PatientItem key={r.id} record={r} onClick={() => viewRecord(r.id)} />)}</div>
+                }
+              </div>
+            </div>
+          )}
+
           {view === "history" && (
             <div className="history">
               <div className="card">
@@ -1222,6 +1213,7 @@ export default function App() {
             </div>
           )}
         </>
+        )}
       </div>
     </div>
   );
