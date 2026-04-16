@@ -843,6 +843,7 @@ export default function App() {
                 sessionLabel={view === "session" ? "← Назад" : "Сессия"}
                 onLogout={logout}
               />
+            </div>
           </div>
 
           {/* Mode tabs */}
