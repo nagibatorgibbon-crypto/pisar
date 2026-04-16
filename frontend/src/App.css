@@ -333,3 +333,22 @@ textarea::placeholder { color: var(--gray-400); }
 .snip-delete:hover { color: #ef4444; }
 .snip-add-form { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--gray-200); padding-top: 12px; margin-top: 4px; }
 .snip-add-title { font-size: 13px; font-weight: 600; color: var(--gray-700); }
+
+/* ─── Live Session ─── */
+.session-view { display: flex; flex-direction: column; gap: 16px; animation: fadeUp 0.3s ease; }
+.session-desc { font-size: 13px; color: var(--gray-500); margin: 0 0 12px; line-height: 1.5; }
+.session-join-row { display: flex; gap: 8px; }
+.session-code-input { flex: 1; padding: 11px 14px; border: 1.5px solid var(--gray-200); border-radius: var(--radius-sm); font-size: 20px; font-weight: 700; text-align: center; letter-spacing: 4px; font-family: var(--font); text-transform: uppercase; }
+.session-code-input:focus { outline: none; border-color: var(--green-500); }
+.session-code-display { text-align: center; padding: 20px 0 12px; }
+.session-code-label { font-size: 12px; color: var(--gray-500); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+.session-code-big { font-size: 48px; font-weight: 800; color: var(--green-500); letter-spacing: 8px; font-family: var(--font); }
+.session-code-hint { font-size: 12px; color: var(--gray-500); margin-top: 8px; }
+.session-status { text-align: center; padding: 10px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; }
+.session-status.connected { background: #f0fdf4; color: #16a34a; }
+.session-status.waiting { background: var(--gray-50); color: var(--gray-500); }
+.session-textarea { width: 100%; min-height: 150px; padding: 12px; border: 1.5px solid var(--gray-200); border-radius: var(--radius-sm); font-size: 14px; font-family: var(--font); line-height: 1.6; resize: vertical; margin-top: 8px; box-sizing: border-box; }
+.session-textarea:focus { outline: none; border-color: var(--green-400); }
+.session-phone-hint { font-size: 12px; color: var(--gray-400); margin-top: 6px; text-align: center; }
+.session-live-text { min-height: 150px; padding: 14px; background: var(--gray-50); border-radius: var(--radius-sm); font-size: 14px; line-height: 1.6; color: var(--gray-800); white-space: pre-wrap; margin-top: 8px; border: 1px solid var(--gray-200); }
+.session-badge { background: rgba(255,255,255,0.25) !important; }

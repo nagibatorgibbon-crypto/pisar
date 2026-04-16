@@ -147,6 +147,14 @@ export default function App() {
   const [diarySaving, setDiarySaving] = useState(false);
   const [diarySaved, setDiarySaved] = useState(false);
 
+  // ─── Live Session (phone↔computer sync) ───
+  const [sessionCode, setSessionCode] = useState("");
+  const [sessionRole, setSessionRole] = useState(""); // "phone" | "computer"
+  const [sessionConnected, setSessionConnected] = useState(false);
+  const [sessionText, setSessionText] = useState("");
+  const [sessionInput, setSessionInput] = useState("");
+  const sessionWsRef = useRef(null);
+
   // Snippets
   const [snippets, setSnippets] = useState(() => {
     try { const s = localStorage.getItem("pisar_snippets"); return s ? JSON.parse(s) : DEFAULT_SNIPPETS; } catch { return DEFAULT_SNIPPETS; }
@@ -460,6 +468,50 @@ export default function App() {
     try { await fetch(`${API}/records/${id}`, { method: "DELETE", headers: authHeaders }); fetchRecords(); if (selectedRecord?.id === id) { setSelectedRecord(null); setView("history"); } } catch(e){}
   };
 
+  // ─── Session functions ───
+  const WS_BASE = API.replace("https://", "wss://").replace("http://", "ws://");
+
+  const createSession = async () => {
+    try {
+      const res = await fetch(`${API}/session/create`, { method: "POST" });
+      const data = await res.json();
+      setSessionCode(data.code);
+      setSessionRole("phone");
+      connectSessionWs("phone", data.code);
+    } catch(e) { setErr("Ошибка создания сессии"); }
+  };
+
+  const joinSession = (code) => {
+    setSessionCode(code.toUpperCase());
+    setSessionRole("computer");
+    connectSessionWs("computer", code.toUpperCase());
+  };
+
+  const connectSessionWs = (role, code) => {
+    const ws = new WebSocket(`${WS_BASE}/ws/${role}/${code}`);
+    sessionWsRef.current = ws;
+    ws.onopen = () => setSessionConnected(true);
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "text") {
+        setSessionText(msg.text);
+        if (role === "computer") setText(msg.text);
+      }
+    };
+    ws.onclose = () => { setSessionConnected(false); };
+  };
+
+  const sendSessionText = (t) => {
+    if (sessionWsRef.current?.readyState === 1) {
+      sessionWsRef.current.send(JSON.stringify({ type: "text", text: t }));
+    }
+  };
+
+  const closeSession = () => {
+    sessionWsRef.current?.close();
+    setSessionCode(""); setSessionRole(""); setSessionConnected(false); setSessionText(""); setSessionInput("");
+  };
+
   const loadDemo = (e) => {
     e.preventDefault();
     const key = getSpecKey();
@@ -694,6 +746,9 @@ export default function App() {
             <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент врача</div></div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               <div className="header-badge" onClick={() => setShowSnipManager(true)}>Сниппеты</div>
+              <div className="header-badge session-badge" onClick={() => setView(view === "session" ? "editor" : "session")}>
+                {view === "session" ? "← Назад" : "📱 Сессия"}
+              </div>
               {records.length > 0 && !liveMode && <div className="header-badge" onClick={() => setView(view === "history" || view === "detail" || view === "tpl-preview" ? "editor" : "history")}>{view === "history" || view === "detail" || view === "tpl-preview" ? "← Назад" : `Пациенты (${records.length})`}</div>}
             </div>
           </div>
@@ -953,6 +1008,65 @@ export default function App() {
                 )}
               </div>)}
             </>
+          )}
+
+          {view === "session" && (
+            <div className="session-view">
+              {!sessionRole ? (
+                <>
+                  <div className="card">
+                    <div className="section-label">Синхронизация телефон → компьютер</div>
+                    <p className="session-desc">Запишите речь на телефоне — текст появится на компьютере в реальном времени.</p>
+                    <button className="cta" onClick={createSession}>📱 Создать сессию (с телефона)</button>
+                  </div>
+                  <div className="card">
+                    <div className="section-label">Подключиться к сессии (с компьютера)</div>
+                    <p className="session-desc">Введите код который показан на телефоне.</p>
+                    <div className="session-join-row">
+                      <input className="session-code-input" placeholder="ABC123" maxLength={6} value={sessionInput} onChange={e => setSessionInput(e.target.value.toUpperCase())} />
+                      <button className="cta" style={{flex:1}} onClick={() => joinSession(sessionInput)} disabled={sessionInput.length < 4}>Подключиться</button>
+                    </div>
+                  </div>
+                </>
+              ) : sessionRole === "phone" ? (
+                <div className="card">
+                  <div className="session-code-display">
+                    <div className="session-code-label">Код сессии</div>
+                    <div className="session-code-big">{sessionCode}</div>
+                    <div className="session-code-hint">Введите этот код на компьютере в разделе «Сессия»</div>
+                  </div>
+                  <div className={`session-status ${sessionConnected ? "connected" : "waiting"}`}>
+                    {sessionConnected ? "✓ Компьютер подключён" : "⏳ Ожидание компьютера..."}
+                  </div>
+                  <div className="section-label" style={{marginTop:16}}>Текст для передачи</div>
+                  <textarea
+                    className="session-textarea"
+                    placeholder="Говорите — или печатайте здесь. Текст отправится на компьютер..."
+                    value={sessionText}
+                    onChange={e => { setSessionText(e.target.value); sendSessionText(e.target.value); }}
+                  />
+                  <div className="session-phone-hint">💡 Используйте микрофон клавиатуры телефона для диктовки</div>
+                  <button className="cta" style={{marginTop:12}} onClick={() => { const blob = new Blob([sessionText]); setResult(null); setText(sessionText); setView("editor"); closeSession(); }}>
+                    Перенести текст и структурировать →
+                  </button>
+                  <button className="sec-edit-cancel" style={{marginTop:8,width:"100%",padding:10}} onClick={closeSession}>Завершить сессию</button>
+                </div>
+              ) : (
+                <div className="card">
+                  <div className={`session-status ${sessionConnected ? "connected" : "waiting"}`} style={{marginBottom:16}}>
+                    {sessionConnected ? "✓ Телефон подключён — текст появится ниже" : "⏳ Ожидание телефона..."}
+                  </div>
+                  <div className="section-label">Текст с телефона</div>
+                  <div className="session-live-text">{sessionText || "Текст появится здесь когда врач начнёт говорить на телефоне..."}</div>
+                  {sessionText && (
+                    <button className="cta" style={{marginTop:12}} onClick={() => { setText(sessionText); setView("editor"); closeSession(); }}>
+                      Перенести в редактор и структурировать →
+                    </button>
+                  )}
+                  <button className="sec-edit-cancel" style={{marginTop:8,width:"100%",padding:10}} onClick={closeSession}>Отключиться</button>
+                </div>
+              )}
+            </div>
           )}
 
           {view === "template" && (

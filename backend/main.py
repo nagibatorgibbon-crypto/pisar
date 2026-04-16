@@ -14,7 +14,7 @@ import httpx
 import hashlib
 import secrets
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import warnings
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
@@ -37,6 +37,98 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── Live Session Manager (WebSocket) ───
+
+import asyncio
+from typing import Dict, Optional
+
+class SessionManager:
+    def __init__(self):
+        self.sessions: Dict[str, dict] = {}  # code -> {phone_ws, computer_ws, text}
+
+    def create_session(self) -> str:
+        """Создаёт новую сессию, возвращает 6-значный код."""
+        while True:
+            code = str(uuid.uuid4())[:6].upper().replace("-", "")[:6]
+            if code not in self.sessions:
+                self.sessions[code] = {"phone": None, "computer": None, "text": ""}
+                return code
+
+    def get_session(self, code: str) -> Optional[dict]:
+        return self.sessions.get(code.upper())
+
+    def cleanup_session(self, code: str):
+        self.sessions.pop(code.upper(), None)
+
+session_manager = SessionManager()
+
+
+@app.post("/session/create")
+async def create_session():
+    """Телефон создаёт новую сессию и получает код."""
+    code = session_manager.create_session()
+    return {"code": code}
+
+
+@app.websocket("/ws/phone/{code}")
+async def phone_ws(websocket: WebSocket, code: str):
+    """WebSocket для телефона — отправляет текст."""
+    code = code.upper()
+    session = session_manager.get_session(code)
+    if not session:
+        await websocket.close(code=4004)
+        return
+    await websocket.accept()
+    session["phone"] = websocket
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            if msg.get("type") == "text":
+                session["text"] = msg["text"]
+                # Пушим на компьютер если подключён
+                if session["computer"]:
+                    try:
+                        await session["computer"].send_text(json.dumps({
+                            "type": "text",
+                            "text": msg["text"]
+                        }))
+                    except Exception:
+                        session["computer"] = None
+            elif msg.get("type") == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+    except WebSocketDisconnect:
+        session["phone"] = None
+        if not session["computer"]:
+            session_manager.cleanup_session(code)
+
+
+@app.websocket("/ws/computer/{code}")
+async def computer_ws(websocket: WebSocket, code: str):
+    """WebSocket для компьютера — получает текст."""
+    code = code.upper()
+    session = session_manager.get_session(code)
+    if not session:
+        await websocket.close(code=4004)
+        return
+    await websocket.accept()
+    session["computer"] = websocket
+    # Сразу отправляем накопленный текст если есть
+    if session["text"]:
+        await websocket.send_text(json.dumps({"type": "text", "text": session["text"]}))
+    await websocket.send_text(json.dumps({"type": "connected", "message": "Телефон подключён"}))
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            if msg.get("type") == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+    except WebSocketDisconnect:
+        session["computer"] = None
+        if not session["phone"]:
+            session_manager.cleanup_session(code)
 
 
 # ─── Database ───
