@@ -195,6 +195,12 @@ export default function App() {
   const [diarySaving, setDiarySaving] = useState(false);
   const [diarySaved, setDiarySaved] = useState(false);
 
+  // ─── Diary Samples (обучение) ───
+  const [diarySamples, setDiarySamples] = useState([]);
+  const [showSamples, setShowSamples] = useState(false);
+  const [sampleText, setSampleText] = useState("");
+  const [sampleSaving, setSampleSaving] = useState(false);
+
   // ─── Live Session (phone↔computer sync) ───
   const [sessionCode, setSessionCode] = useState("");
   const [sessionRole, setSessionRole] = useState(""); // "phone" | "computer"
@@ -306,8 +312,39 @@ export default function App() {
   };
 
   useEffect(() => { if (token) { fetchRecords(); fetchTemplates(); } }, [token]);
+  useEffect(() => { if (token && isDiary) fetchDiarySamples(getSpecKey()); }, [token, psyMode, spec]);
   const fetchRecords = async () => { try { const r = await fetch(`${API}/records`, { headers: authHeaders }); if (r.ok) setRecords(await r.json()); } catch(e){} };
   const fetchTemplates = async () => { try { const r = await fetch(`${API}/templates`, { headers: authHeaders }); if (r.ok) setTemplates(await r.json()); } catch(e){} };
+
+  const fetchDiarySamples = async (specKey) => {
+    try {
+      const r = await fetch(`${API}/diary-samples?specialty_key=${specKey || ""}`, { headers: authHeaders });
+      if (r.ok) setDiarySamples(await r.json());
+    } catch(e){}
+  };
+
+  const saveDiarySample = async () => {
+    if (!sampleText.trim()) return;
+    setSampleSaving(true);
+    try {
+      const fd = new FormData();
+      fd.append("specialty_key", getSpecKey());
+      fd.append("sample_text", sampleText.trim());
+      const r = await fetch(`${API}/diary-samples`, { method: "POST", body: fd, headers: authHeaders });
+      if (r.ok) {
+        setSampleText("");
+        fetchDiarySamples(getSpecKey());
+      }
+    } catch(e) {}
+    finally { setSampleSaving(false); }
+  };
+
+  const deleteDiarySample = async (id) => {
+    try {
+      await fetch(`${API}/diary-samples/${id}`, { method: "DELETE", headers: authHeaders });
+      fetchDiarySamples(getSpecKey());
+    } catch(e) {}
+  };
 
   const uploadTemplate = async (file) => {
     if (!file) return;
@@ -927,6 +964,53 @@ export default function App() {
                       <input type="date" className="diary-date-input" value={diaryDateTo} onChange={e => setDiaryDateTo(e.target.value)} />
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Diary training section */}
+              {isDiary && (
+                <div className="card">
+                  <div className="section-label" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span>Обучение стилю</span>
+                    <span className="train-badge" onClick={() => setShowSamples(!showSamples)}>
+                      {diarySamples.length > 0 ? `${diarySamples.length} ${diarySamples.length === 1 ? "пример" : diarySamples.length < 5 ? "примера" : "примеров"}` : "Нет примеров"}
+                      {showSamples ? " ▲" : " ▼"}
+                    </span>
+                  </div>
+                  <div className="train-hint">Добавьте примеры ваших дневников — нейросеть будет писать в вашем стиле</div>
+
+                  {showSamples && (
+                    <div className="train-panel">
+                      <textarea
+                        className="train-textarea"
+                        placeholder={"Вставьте пример вашего дневника, например:\n15.03.2025 Состояние стабильное. Сон улучшился. Аппетит достаточный. Фон настроения ровный. Продолжить терапию в прежних дозировках."}
+                        value={sampleText}
+                        onChange={e => setSampleText(e.target.value)}
+                        rows={5}
+                      />
+                      <button
+                        className="train-save-btn"
+                        onClick={saveDiarySample}
+                        disabled={sampleSaving || !sampleText.trim()}
+                      >
+                        {sampleSaving ? "Сохраняю..." : "+ Добавить пример"}
+                      </button>
+
+                      {diarySamples.length > 0 && (
+                        <div className="train-samples-list">
+                          {diarySamples.map(s => (
+                            <div key={s.id} className="train-sample">
+                              <div className="train-sample-text">{s.sample_text.length > 150 ? s.sample_text.slice(0, 150) + "..." : s.sample_text}</div>
+                              <div className="train-sample-meta">
+                                <span>{s.created_at}</span>
+                                <span className="train-sample-del" onClick={() => deleteDiarySample(s.id)}>Удалить</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

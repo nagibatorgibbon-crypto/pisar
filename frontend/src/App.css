@@ -371,3 +371,20 @@ textarea::placeholder { color: var(--gray-400); }
 .hamburger-item:last-child { border-bottom: none; }
 .hamburger-item:hover { background: var(--gray-50); }
 .hamburger-logout { color: #ef4444; }
+
+/* ─── Diary Training ─── */
+.train-badge { font-size: 12px; color: var(--green-500); font-weight: 600; cursor: pointer; padding: 4px 8px; border-radius: 6px; background: var(--green-50); }
+.train-badge:hover { background: var(--green-100); }
+.train-hint { font-size: 12px; color: var(--gray-400); margin-bottom: 8px; line-height: 1.4; }
+.train-panel { animation: fadeUp 0.2s ease; }
+.train-textarea { width: 100%; padding: 10px 12px; font-size: 13px; font-family: var(--font); border: 1px solid var(--gray-200); border-radius: 8px; resize: vertical; min-height: 80px; outline: none; background: var(--gray-50); line-height: 1.5; transition: border-color 0.2s; }
+.train-textarea:focus { border-color: var(--green-500); background: white; }
+.train-save-btn { width: 100%; padding: 10px; margin-top: 8px; background: var(--green-500); color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font); transition: background 0.2s; }
+.train-save-btn:hover { background: var(--green-600); }
+.train-save-btn:disabled { background: var(--gray-300); cursor: not-allowed; }
+.train-samples-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.train-sample { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 10px 12px; }
+.train-sample-text { font-size: 12px; color: var(--gray-600); line-height: 1.4; white-space: pre-wrap; }
+.train-sample-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 11px; color: var(--gray-400); }
+.train-sample-del { color: #ef4444; cursor: pointer; font-weight: 600; }
+.train-sample-del:hover { text-decoration: underline; }

@@ -181,6 +181,15 @@ def init_db():
             created_at TEXT DEFAULT ''
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diary_samples (
+            id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT '',
+            specialty_key TEXT DEFAULT '',
+            sample_text TEXT DEFAULT '',
+            created_at TEXT DEFAULT ''
+        )
+    """)
     try:
         conn.execute("ALTER TABLE records ADD COLUMN user_id TEXT DEFAULT ''")
     except Exception:
@@ -1182,7 +1191,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
 
 
 @app.post("/structure")
-async def structure_text(text: str = Form(...), specialty: str = Form("therapist"), template_id: str = Form("")):
+async def structure_text(text: str = Form(...), specialty: str = Form("therapist"), template_id: str = Form(""), authorization: str = Header(None)):
     # Если указан template_id — используем сохранённый шаблон
     if template_id:
         conn = get_db()
@@ -1340,6 +1349,31 @@ async def structure_text(text: str = Form(...), specialty: str = Form("therapist
         prompt = PROMPTS.get(specialty)
         if not prompt:
             raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
+
+        # Если это дневник — подгружаем примеры врача для обучения стилю
+        if "diary" in specialty and authorization:
+            try:
+                user = get_user_by_token(authorization.replace("Bearer ", ""))
+                if user:
+                    conn = get_db()
+                    samples = conn.execute(
+                        "SELECT sample_text FROM diary_samples WHERE user_id = ? AND specialty_key = ? ORDER BY created_at DESC LIMIT 5",
+                        (user["id"], specialty),
+                    ).fetchall()
+                    conn.close()
+                    if samples:
+                        examples = "\n\n---\n\n".join([s["sample_text"][:1500] for s in samples])
+                        prompt += f"""
+
+ВАЖНО: Ниже приведены ПРИМЕРЫ дневниковых записей этого врача. Пиши в ТОЧНО ТАКОМ ЖЕ стиле — копируй манеру, длину предложений, используемые обороты, степень детализации. Адаптируй только содержание под конкретного пациента.
+
+ПРИМЕРЫ СТИЛЯ ВРАЧА:
+{examples}
+
+Пиши новые записи ТОЧНО в этом стиле."""
+            except Exception:
+                pass  # Если что-то пошло не так — продолжаем без примеров
+
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": text},
@@ -1815,6 +1849,63 @@ async def append_diary_entry(
     conn.commit()
     conn.close()
     return {"ok": True, "entries_added": len(new_entries)}
+
+
+# ─── Diary Samples (обучение на примерах врача) ───
+
+@app.post("/diary-samples")
+async def save_diary_sample(
+    specialty_key: str = Form(""),
+    sample_text: str = Form(""),
+    authorization: str = Header(None),
+):
+    """Сохранить пример дневника для обучения нейросети стилю врача."""
+    user = require_auth(authorization)
+    if not sample_text.strip():
+        raise HTTPException(status_code=400, detail="Текст примера не может быть пустым")
+    sample_id = str(uuid.uuid4())[:8]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO diary_samples (id, user_id, specialty_key, sample_text, created_at) VALUES (?, ?, ?, ?, ?)",
+        (sample_id, user["id"], specialty_key or "psychiatrist_pnd_diary", sample_text.strip(), now),
+    )
+    conn.commit()
+    conn.close()
+    return {"id": sample_id, "created_at": now}
+
+
+@app.get("/diary-samples")
+async def list_diary_samples(
+    specialty_key: str = "",
+    authorization: str = Header(None),
+):
+    """Список примеров дневников врача."""
+    user = require_auth(authorization)
+    conn = get_db()
+    if specialty_key:
+        rows = conn.execute(
+            "SELECT id, specialty_key, sample_text, created_at FROM diary_samples WHERE user_id = ? AND specialty_key = ? ORDER BY created_at DESC",
+            (user["id"], specialty_key),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, specialty_key, sample_text, created_at FROM diary_samples WHERE user_id = ? ORDER BY created_at DESC",
+            (user["id"],),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.delete("/diary-samples/{sample_id}")
+async def delete_diary_sample(sample_id: str, authorization: str = Header(None)):
+    """Удалить пример дневника."""
+    user = require_auth(authorization)
+    conn = get_db()
+    conn.execute("DELETE FROM diary_samples WHERE id = ? AND user_id = ?", (sample_id, user["id"]))
+    conn.commit()
+    conn.close()
+    return {"deleted": sample_id}
 
 
 # ─── Word Export ───
