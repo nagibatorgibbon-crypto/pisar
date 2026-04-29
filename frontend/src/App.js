@@ -833,13 +833,13 @@ export default function App() {
 
   return (
     <div className="app-wrap">
-      <div className="app">
-        {!user ? (
-          // ═══ LOGIN SCREEN ═══
-          <>
-            <div className="header">
-              <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
-              <div><div className="header-title">Писарь</div><div className="header-sub">ИИ-ассистент врача</div></div>
+      {!user ? (
+        // ═══ LOGIN SCREEN ═══
+        <div className="auth-wrap">
+          <div className="auth-card">
+            <div className="auth-logo">
+              <div className="auth-logo-icon"><svg width="20" height="20" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
+              <div className="auth-logo-text">Писарь</div>
             </div>
             <div className="card">
               <div className="section-label">{authView === "login" ? "Вход" : "Регистрация"}</div>
@@ -858,38 +858,89 @@ export default function App() {
                 {authView === "login" ? "Нет аккаунта? Зарегистрироваться" : "Уже есть аккаунт? Войти"}
               </div>
             </div>
-          </>
-        ) : (
-        <>
-          <div className="header">
-            <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
-            <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">{user.name}</div></div>
-            <div className="header-actions">
-              {/* Десктоп: показываем все кнопки */}
-              <div className="header-badges-desktop">
-                <div className="header-badge" onClick={() => setShowSnipManager(true)}>Быстрые фразы</div>
-                <div className="header-badge session-badge" onClick={() => setView(view === "session" ? "editor" : "session")}>
-                  {view === "session" ? "← Назад" : "Сессия"}
-                </div>
-                <div className="header-badge" onClick={logout}>Выйти</div>
+          </div>
+        </div>
+      ) : (
+      <div className="app">
+        {/* ═══ SIDEBAR (desktop only) ═══ */}
+        <div className="sidebar">
+          <div className="sidebar-logo">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg>
+            <div>
+              <div className="sidebar-logo-text">Писарь</div>
+              <div className="sidebar-logo-sub">{user.name}</div>
+            </div>
+          </div>
+          <button className="sidebar-cta" onClick={() => { setView("editor"); setResult(null); setText(""); setDiagnosis(null); setSaved(false); }}>+ Новый приём</button>
+          <div className="sidebar-nav">
+            <div className="sidebar-label">Меню</div>
+            <div className={`sidebar-item ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
+            <div className={`sidebar-item ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
+            <div className={`sidebar-item`} onClick={() => setShowSnipManager(true)}>Быстрые фразы</div>
+            <div className={`sidebar-item ${view === "session" ? "active" : ""}`} onClick={() => setView(view === "session" ? "editor" : "session")}>Сессия</div>
+            {records.length > 0 && (
+              <>
+                <div className="sidebar-label">Недавние</div>
+                {records.slice(0, 5).map(r => (
+                  <div key={r.id} className="sidebar-patient" onClick={() => viewRecord(r.id)}>
+                    <div className="sidebar-patient-name">{r.patient_name || "Без имени"}</div>
+                    <div className="sidebar-patient-meta">{r.diagnosis_code || ""} · {r.created_at}</div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+          <div className="sidebar-bottom">
+            <div className="sidebar-bottom-item" onClick={logout}>Выйти</div>
+          </div>
+        </div>
+
+        {/* ═══ MOBILE HEADER ═══ */}
+        <div className="header">
+          <div className="header-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg></div>
+          <div style={{flex:1}}><div className="header-title">Писарь</div><div className="header-sub">{user.name}</div></div>
+          <div className="header-actions">
+            <div className="header-badges-desktop">
+              <div className="header-badge" onClick={() => setShowSnipManager(true)}>Быстрые фразы</div>
+              <div className="header-badge session-badge" onClick={() => setView(view === "session" ? "editor" : "session")}>
+                {view === "session" ? "← Назад" : "Сессия"}
               </div>
-              {/* Мобильный: гамбургер */}
-              <HamburgerMenu
-                onSnippets={() => setShowSnipManager(true)}
-                onSession={() => setView(view === "session" ? "editor" : "session")}
-                sessionLabel={view === "session" ? "← Назад" : "Сессия"}
-                onLogout={logout}
-              />
+              <div className="header-badge" onClick={logout}>Выйти</div>
+            </div>
+            <HamburgerMenu
+              onSnippets={() => setShowSnipManager(true)}
+              onSession={() => setView(view === "session" ? "editor" : "session")}
+              sessionLabel={view === "session" ? "← Назад" : "Сессия"}
+              onLogout={logout}
+            />
+          </div>
+        </div>
+
+        {/* ═══ MAIN CONTENT ═══ */}
+        <div className="main-content">
+          {/* Top bar (desktop only) */}
+          <div className="topbar">
+            <div className="topbar-tabs">
+              <div className={`topbar-tab ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>
+                {isDiary ? "Дневник" : "Документация"}
+              </div>
+              <div className={`topbar-tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
+            </div>
+            <div className="topbar-right">
+              <div className="topbar-badge">{specInfo.label}</div>
             </div>
           </div>
 
-          {/* Mode tabs */}
-          <div className="card" style={{padding: "12px 16px"}}>
+          {/* Mobile tabs - shown only on mobile via CSS */}
+          <div className="card mobile-tabs" style={{padding: "12px 16px"}}>
             <div className="tabs">
               <div className={`tab ${view !== "my-patients" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
               <div className={`tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
             </div>
           </div>
+
+          <div className="page-content">
+            <div className="page-inner">
 
           {/* ═══ DOCUMENTATION MODE ═══ */}
           {view !== "my-patients" && view === "editor" && (
@@ -1324,9 +1375,11 @@ export default function App() {
               </div>
             </div>
           )}
-        </>
-        )}
-      </div>
+            </div>{/* page-inner */}
+          </div>{/* page-content */}
+        </div>{/* main-content */}
+      </div>{/* app */}
+      )}
     </div>
   );
 }
