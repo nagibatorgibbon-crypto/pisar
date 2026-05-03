@@ -1118,26 +1118,22 @@ export default function App() {
                     <button onClick={() => getDiagnosis()} disabled={diagLoading} className="diag-btn">
                       {diagLoading ? <><span className="spinner" />Анализирую...</> : "Помощь с диагнозом"}
                     </button>
-                    {diagnosis && (() => {
-                      const d = diagnosis;
-                      const s = (v) => (v && typeof v === 'object') ? JSON.stringify(v) : (v || '');
-                      return (
+                    {diagnosis && (
                       <div className="diag-panel">
                         <div className="diag-header-row">
                           <div className="diag-header">Предварительный диагноз</div>
                           <div className="diag-warn-badge">ИИ · не окончательный</div>
                         </div>
                         <div className="diag-main">
-                          <div className="diag-main-code">{s(d.icd_code)}</div>
-                          <div className="diag-main-name">{s(d.diagnosis)}</div>
+                          <div className="diag-main-code">{typeof diagnosis.icd_code === 'object' ? JSON.stringify(diagnosis.icd_code) : (diagnosis.icd_code || '')}</div>
+                          <div className="diag-main-name">{typeof diagnosis.diagnosis === 'object' ? JSON.stringify(diagnosis.diagnosis) : (diagnosis.diagnosis || '')}</div>
                         </div>
-                        {d.justification && <div className="diag-section"><div className="diag-label">Обоснование</div><div className="diag-value">{s(d.justification)}</div></div>}
-                        {d.differential && <div className="diag-section"><div className="diag-label">Дифф. диагноз</div><div className="diag-value">{s(d.differential)}</div></div>}
-                        {d.treatment && <div className="diag-section"><div className="diag-label">Лечение</div><div className="diag-value">{s(d.treatment)}</div></div>}
-                        {d.examinations && <div className="diag-section"><div className="diag-label">Обследования</div><div className="diag-value">{s(d.examinations)}</div></div>}
+                        {diagnosis.justification && <div className="diag-section"><div className="diag-label">Обоснование</div><div className="diag-value">{typeof diagnosis.justification === 'object' ? JSON.stringify(diagnosis.justification) : (diagnosis.justification || '')}</div></div>}
+                        {diagnosis.differential && <div className="diag-section"><div className="diag-label">Дифф. диагноз</div><div className="diag-value">{typeof diagnosis.differential === 'object' ? JSON.stringify(diagnosis.differential) : (diagnosis.differential || '')}</div></div>}
+                        {diagnosis.treatment && <div className="diag-section"><div className="diag-label">Лечение</div><div className="diag-value">{typeof diagnosis.treatment === 'object' ? JSON.stringify(diagnosis.treatment) : (diagnosis.treatment || '')}</div></div>}
+                        {diagnosis.examinations && <div className="diag-section"><div className="diag-label">Обследования</div><div className="diag-value">{typeof diagnosis.examinations === 'object' ? JSON.stringify(diagnosis.examinations) : (diagnosis.examinations || '')}</div></div>}
                       </div>
-                      );
-                    })()}
+                    )}
                   </>
                 )}
                 {isDiary ? (
