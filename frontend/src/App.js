@@ -1248,10 +1248,11 @@ export default function App() {
             <div className="history">
               <div className="card">
                 <div className="section-label">Мои пациенты</div>
-                {records.length === 0
-                  ? <div className="empty-history">Пока нет сохранённых пациентов. После структурирования нажмите «Сохранить» чтобы добавить пациента.</div>
-                  : <div className="patient-list">{records.map((r) => <PatientItem key={r.id} record={r} onClick={() => viewRecord(r.id)} />)}</div>
-                }
+                {records.length === 0 ? (
+                  <div className="empty-history">Пока нет сохранённых пациентов. После структурирования нажмите «Сохранить» чтобы добавить пациента.</div>
+                ) : (
+                  <div className="patient-list">{records.map((r) => (<PatientItem key={r.id} record={r} onClick={() => viewRecord(r.id)} />))}</div>
+                )}
               </div>
             </div>
           )}
@@ -1260,7 +1261,11 @@ export default function App() {
             <div className="history">
               <div className="card">
                 <div className="section-label">История пациентов</div>
-                {records.length === 0 ? <div className="empty-history">Записей пока нет.</div> : <div className="patient-list">{records.map((r) => <PatientItem key={r.id} record={r} onClick={() => viewRecord(r.id)} />)}</div>}
+                {records.length === 0 ? (
+                  <div className="empty-history">Записей пока нет.</div>
+                ) : (
+                  <div className="patient-list">{records.map((r) => (<PatientItem key={r.id} record={r} onClick={() => viewRecord(r.id)} />))}</div>
+                )}
               </div>
               <button onClick={newRecord} className="cta">+ Новая запись</button>
             </div>
@@ -1371,10 +1376,10 @@ export default function App() {
               </div>
             </div>
           )}
-            </div>{/* page-inner */}
-          </div>{/* page-content */}
-        </div>{/* main-content */}
-      </div>{/* app */}
+            </div>
+          </div>
+        </div>
+      </div>
       )}
     </div>
   );
