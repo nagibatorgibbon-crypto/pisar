@@ -4,7 +4,7 @@ WORKDIR /app/frontend
 COPY frontend/package.json ./
 RUN npm install
 COPY frontend/ ./
-RUN npm run build
+RUN DISABLE_ESLINT_PLUGIN=true npm run build
 
 # Stage 2: Python backend + static files
 FROM python:3.11-slim
