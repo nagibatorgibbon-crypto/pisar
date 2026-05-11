@@ -872,7 +872,7 @@ export default function App() {
           <div className="sidebar-menu">
             <div className={`sidebar-menu-item ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
             <div className={`sidebar-menu-item ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
-            <div className="sidebar-menu-item" onClick={() => setShowSnipManager(true)}>Шаблоны</div>
+            <div className={`sidebar-menu-item ${view === "template" ? "active" : ""}`} onClick={() => setView("template")}>Шаблоны</div>
             <div className="sidebar-menu-item" onClick={() => setShowSamples(!showSamples)}>Обучение стилю</div>
           </div>
           {records.length > 0 && (
@@ -917,28 +917,32 @@ export default function App() {
 
         {/* ═══ MAIN CONTENT ═══ */}
         <div className="main-content">
-          {/* Top bar (desktop only) */}
-          <div className="topbar">
-            <div className="topbar-tabs">
-              <div className={`topbar-tab ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>
-                {isDiary ? "Дневник" : "Документация"}
+          {/* Top bar (desktop only, hidden on home) */}
+          {view !== "home" && (
+            <div className="topbar">
+              <div className="topbar-tabs">
+                <div className={`topbar-tab ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>
+                  {isDiary ? "Дневник" : "Документация"}
+                </div>
+                <div className={`topbar-tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
               </div>
-              <div className={`topbar-tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
+              <div className="topbar-right">
+                <div className="topbar-badge">{specInfo.label}</div>
+              </div>
             </div>
-            <div className="topbar-right">
-              <div className="topbar-badge">{specInfo.label}</div>
-            </div>
-          </div>
+          )}
 
           {/* Mobile tabs - shown only on mobile via CSS */}
-          <div className="card mobile-tabs" style={{padding: "12px 16px"}}>
-            <div className="tabs">
-              <div className={`tab ${view !== "my-patients" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
-              <div className={`tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
+          {view !== "home" && (
+            <div className="card mobile-tabs" style={{padding: "12px 16px"}}>
+              <div className="tabs">
+                <div className={`tab ${view !== "my-patients" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
+                <div className={`tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
+              </div>
             </div>
-          </div>
+          )}
 
-          <div className="page-content">
+          <div className={`page-content ${view === "home" ? "is-home" : ""}`}>
             <div className="page-inner">
 
           {/* ═══ HOME (WELCOME) SCREEN ═══ */}
@@ -963,7 +967,7 @@ export default function App() {
                   <div className="welcome-card-title">Дневники</div>
                   <div className="welcome-card-desc">Генерация дневников за выбранный период</div>
                 </div>
-                <div className="welcome-card" onClick={() => setShowSnipManager(true)}>
+                <div className="welcome-card" onClick={() => setView("template")}>
                   <div className="welcome-card-dot amber"></div>
                   <div className="welcome-card-title">Шаблоны</div>
                   <div className="welcome-card-desc">Создайте или загрузите свой шаблон документа</div>
