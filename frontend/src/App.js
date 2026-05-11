@@ -164,7 +164,7 @@ export default function App() {
   };
 
   // ─── App state ───
-  const [view, setView] = useState("editor");
+  const [view, setView] = useState("home");
   const [spec, setSpec] = useState("therapist");
   const [uziType, setUziType] = useState("uzi_abdominal");
   const [psyMode, setPsyMode] = useState("exam");
@@ -864,34 +864,33 @@ export default function App() {
       <div className="app">
         {/* ═══ SIDEBAR (desktop only) ═══ */}
         <div className="sidebar">
-          <div className="sidebar-logo">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="7" y="2" width="4" height="14" rx="1" fill="white" opacity="0.9"/><rect x="2" y="7" width="14" height="4" rx="1" fill="white" opacity="0.9"/></svg>
-            <div>
-              <div className="sidebar-logo-text">Писарь</div>
-              <div className="sidebar-logo-sub">{user.name}</div>
-            </div>
+          <div className="sidebar-top">
+            <button className="sidebar-plus-btn" onClick={() => { setView("editor"); setResult(null); setText(""); setDiagnosis(null); setSaved(false); }} title="Новый приём">+</button>
+            <div className="sidebar-brand">Писарь</div>
           </div>
-          <button className="sidebar-cta" onClick={() => { setView("editor"); setResult(null); setText(""); setDiagnosis(null); setSaved(false); }}>+ Новый приём</button>
-          <div className="sidebar-nav">
-            <div className="sidebar-label">Меню</div>
-            <div className={`sidebar-item ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
-            <div className={`sidebar-item ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
-            <div className={`sidebar-item`} onClick={() => setShowSnipManager(true)}>Быстрые фразы</div>
-            <div className={`sidebar-item ${view === "session" ? "active" : ""}`} onClick={() => setView(view === "session" ? "editor" : "session")}>Сессия</div>
-            {records.length > 0 && (
-              <>
-                <div className="sidebar-label">Недавние</div>
+          <button className="sidebar-new-btn" onClick={() => { setView("editor"); setResult(null); setText(""); setDiagnosis(null); setSaved(false); }}>+ Новый приём</button>
+          <div className="sidebar-menu">
+            <div className={`sidebar-menu-item ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
+            <div className={`sidebar-menu-item ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
+            <div className="sidebar-menu-item" onClick={() => setShowSnipManager(true)}>Шаблоны</div>
+            <div className="sidebar-menu-item" onClick={() => setShowSamples(!showSamples)}>Обучение стилю</div>
+          </div>
+          {records.length > 0 && (
+            <>
+              <div className="sidebar-section-label">Недавние пациенты</div>
+              <div className="sidebar-recent">
                 {records.slice(0, 5).map(r => (
-                  <div key={r.id} className="sidebar-patient" onClick={() => viewRecord(r.id)}>
-                    <div className="sidebar-patient-name">{r.patient_name || "Без имени"}</div>
-                    <div className="sidebar-patient-meta">{r.diagnosis_code || ""} · {r.created_at}</div>
+                  <div key={r.id} className="sidebar-recent-item" onClick={() => viewRecord(r.id)}>
+                    <div className="sidebar-recent-name">{r.patient_name || "Без имени"}</div>
+                    <div className="sidebar-recent-meta">{r.diagnosis_code || ""} · {r.created_at}</div>
                   </div>
                 ))}
-              </>
-            )}
-          </div>
-          <div className="sidebar-bottom">
-            <div className="sidebar-bottom-item" onClick={logout}>Выйти</div>
+              </div>
+            </>
+          )}
+          {records.length === 0 && <div className="sidebar-recent" />}
+          <div className="sidebar-footer">
+            <div className="sidebar-footer-item" onClick={logout}>Настройки</div>
           </div>
         </div>
 
@@ -941,6 +940,50 @@ export default function App() {
 
           <div className="page-content">
             <div className="page-inner">
+
+          {/* ═══ HOME (WELCOME) SCREEN ═══ */}
+          {view === "home" && (
+            <div className="welcome">
+              <div className="welcome-greeting">Добрый день{user.name ? `, ${user.name}` : ""}</div>
+              <button className="welcome-cta" onClick={() => { setView("editor"); setResult(null); setText(""); setDiagnosis(null); setSaved(false); }}>+ Новый приём</button>
+              <div className="welcome-or">или выберите действие</div>
+              <div className="welcome-grid">
+                <div className="welcome-card" onClick={() => setView("editor")}>
+                  <div className="welcome-card-dot"></div>
+                  <div className="welcome-card-title">Расшифровка</div>
+                  <div className="welcome-card-desc">Запишите приём и получите готовый документ</div>
+                </div>
+                <div className="welcome-card" onClick={() => setView("editor")}>
+                  <div className="welcome-card-dot blue"></div>
+                  <div className="welcome-card-title">Помощь с диагнозом</div>
+                  <div className="welcome-card-desc">МКБ-10, обоснование и лечение по КР</div>
+                </div>
+                <div className="welcome-card" onClick={() => { setView("editor"); setPsyMode && setPsyMode("diary"); }}>
+                  <div className="welcome-card-dot purple"></div>
+                  <div className="welcome-card-title">Дневники</div>
+                  <div className="welcome-card-desc">Генерация дневников за выбранный период</div>
+                </div>
+                <div className="welcome-card" onClick={() => setShowSnipManager(true)}>
+                  <div className="welcome-card-dot amber"></div>
+                  <div className="welcome-card-title">Шаблоны</div>
+                  <div className="welcome-card-desc">Создайте или загрузите свой шаблон документа</div>
+                </div>
+                <div className="welcome-card" onClick={() => setView("my-patients")}>
+                  <div className="welcome-card-dot"></div>
+                  <div className="welcome-card-title">Экспорт в Word</div>
+                  <div className="welcome-card-desc">Скачайте готовый документ в формате .docx</div>
+                </div>
+                <div className="welcome-card" onClick={() => setShowSamples(true)}>
+                  <div className="welcome-card-dot purple"></div>
+                  <div className="welcome-card-title">Обучение стилю</div>
+                  <div className="welcome-card-desc">Нейросеть пишет в вашей манере</div>
+                </div>
+              </div>
+              <div className="welcome-ask">
+                <input className="ask-input" placeholder="Задайте медицинский вопрос..." />
+              </div>
+            </div>
+          )}
 
           {/* ═══ DOCUMENTATION MODE ═══ */}
           {view !== "my-patients" && view === "editor" && (

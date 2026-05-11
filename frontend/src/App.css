@@ -1,14 +1,16 @@
-/* ═══ Писарь v5 — Clean desktop design ═══ */
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
+/* ═══ Писарь — Figma desktop design ═══ */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 
 :root {
   --font: 'Manrope', -apple-system, sans-serif;
-  --green-500: #0D7C5F; --green-600: #0a6a50; --green-50: #ecfdf5; --green-100: #d1fae5;
+  --green-500: #0D7C5F; --green-600: #0a6a50; --green-700: #075a42; --green-50: #ecfdf5; --green-100: #d1fae5;
   --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-300: #d1d5db;
   --gray-400: #9ca3af; --gray-500: #6b7280; --gray-600: #4b5563; --gray-700: #374151; --gray-800: #1f2937; --gray-900: #111827;
   --blue-500: #3b82f6; --red-500: #ef4444; --amber-500: #f59e0b; --purple-500: #8b5cf6;
   --radius: 12px; --radius-sm: 8px;
-  --sidebar-w: 230px;
+  --sidebar-w: 240px;
+  --topbar-h: 56px;
+  --bottombar-h: 56px;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: var(--font); background: var(--gray-50); color: var(--gray-900); -webkit-font-smoothing: antialiased; min-height: 100vh; }
@@ -250,6 +252,79 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 .mobile-tabs { display: none; }
+
+/* ═══ FIGMA DESIGN ENHANCEMENTS ═══ */
+
+/* Sidebar: top bar with logo + plus button */
+.sidebar { background: var(--green-500); }
+.sidebar-top { padding: 14px 16px; display: flex; align-items: center; gap: 10px; height: 64px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+.sidebar-plus-btn { width: 28px; height: 28px; border-radius: 8px; background: rgba(255,255,255,0.18); color: white; border: none; font-size: 18px; font-weight: 400; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; font-family: var(--font); transition: background 0.15s; }
+.sidebar-plus-btn:hover { background: rgba(255,255,255,0.28); }
+.sidebar-brand { color: white; font-weight: 700; font-size: 16px; letter-spacing: -0.2px; }
+
+.sidebar-new-btn { margin: 16px 20px 8px; padding: 12px; background: rgba(255,255,255,0.18); color: white; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font); transition: background 0.15s; }
+.sidebar-new-btn:hover { background: rgba(255,255,255,0.28); }
+
+.sidebar-menu { padding: 12px 12px 0; display: flex; flex-direction: column; gap: 2px; }
+.sidebar-menu-item { padding: 8px 16px; font-size: 13px; color: rgba(255,255,255,0.65); cursor: pointer; border-radius: 8px; font-weight: 500; transition: all 0.15s; }
+.sidebar-menu-item:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); }
+.sidebar-menu-item.active { background: rgba(255,255,255,0.18); color: white; font-weight: 600; }
+
+.sidebar-section-label { padding: 16px 20px 8px; font-size: 10px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; }
+
+.sidebar-recent { padding: 0 12px; display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; }
+.sidebar-recent-item { padding: 7px 8px; cursor: pointer; border-radius: 6px; transition: background 0.15s; }
+.sidebar-recent-item:hover { background: rgba(255,255,255,0.06); }
+.sidebar-recent-name { color: rgba(255,255,255,0.85); font-size: 13px; font-weight: 500; line-height: 1.2; }
+.sidebar-recent-meta { color: rgba(255,255,255,0.4); font-size: 11px; margin-top: 2px; }
+
+.sidebar-footer { padding: 12px; border-top: 1px solid rgba(255,255,255,0.1); }
+.sidebar-footer-item { padding: 8px 16px; font-size: 13px; color: rgba(255,255,255,0.6); cursor: pointer; border-radius: 8px; transition: background 0.15s; }
+.sidebar-footer-item:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.9); }
+
+/* ═══ WELCOME (HOME) SCREEN ═══ */
+.welcome { padding: 60px 40px; max-width: 1100px; margin: 0 auto; }
+.welcome-greeting { font-size: 28px; font-weight: 700; color: var(--gray-900); text-align: center; margin-bottom: 28px; letter-spacing: -0.5px; }
+.welcome-cta { display: block; margin: 0 auto 16px; min-width: 200px; padding: 14px 28px; background: var(--green-500); color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: var(--font); transition: background 0.15s; }
+.welcome-cta:hover { background: var(--green-600); }
+.welcome-or { text-align: center; font-size: 13px; color: var(--gray-400); margin-bottom: 28px; }
+
+.welcome-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; max-width: 680px; margin: 0 auto; }
+.welcome-card { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 20px; cursor: pointer; transition: all 0.15s; min-height: 110px; display: flex; flex-direction: column; gap: 6px; }
+.welcome-card:hover { border-color: var(--green-500); box-shadow: 0 4px 16px rgba(13,124,95,0.08); transform: translateY(-1px); }
+.welcome-card-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green-500); margin-bottom: 6px; }
+.welcome-card-dot.blue { background: var(--blue-500); }
+.welcome-card-dot.purple { background: var(--purple-500); }
+.welcome-card-dot.amber { background: var(--amber-500); }
+.welcome-card-title { font-size: 14px; font-weight: 600; color: var(--gray-900); }
+.welcome-card-desc { font-size: 12px; color: var(--gray-500); line-height: 1.4; }
+
+/* ═══ AI ASK BAR (bottom) ═══ */
+.ask-bar { position: fixed; bottom: 0; left: var(--sidebar-w); right: 0; height: var(--bottombar-h); background: white; border-top: 1px solid var(--gray-200); display: flex; align-items: center; padding: 0 32px; z-index: 50; }
+.ask-input { flex: 1; max-width: 760px; padding: 10px 16px; border: 1px solid var(--gray-200); border-radius: 10px; font-size: 14px; font-family: var(--font); outline: none; background: var(--gray-50); }
+.ask-input:focus { border-color: var(--green-500); background: white; }
+.welcome-ask { max-width: 680px; margin: 36px auto 0; }
+.welcome-ask .ask-input { width: 100%; padding: 16px 20px; font-size: 14px; }
+
+/* ═══ TOPBAR (improved) ═══ */
+.topbar { min-height: var(--topbar-h); }
+.topbar-title { font-size: 15px; font-weight: 700; color: var(--gray-900); }
+.topbar-actions { display: flex; gap: 8px; align-items: center; }
+.topbar-btn { padding: 8px 14px; font-size: 12px; font-weight: 500; border-radius: 8px; border: 1px solid var(--gray-200); background: white; color: var(--gray-700); cursor: pointer; font-family: var(--font); transition: all 0.15s; }
+.topbar-btn:hover { background: var(--gray-50); border-color: var(--gray-300); }
+.topbar-btn.primary { background: var(--green-500); color: white; border-color: var(--green-500); }
+.topbar-btn.primary:hover { background: var(--green-600); }
+
+/* Page padded for ask-bar */
+.page-content.has-ask-bar { padding-bottom: calc(var(--bottombar-h) + 24px); }
+
+/* ═══ MOBILE OVERRIDES ═══ */
+@media (max-width: 768px) {
+  .ask-bar { left: 0; padding: 0 16px; }
+  .welcome { padding: 24px 16px; }
+  .welcome-greeting { font-size: 22px; }
+  .welcome-grid { grid-template-columns: 1fr; max-width: 100%; }
+}
 
 /* ═══ MOBILE ═══ */
 @media (max-width: 768px) {
