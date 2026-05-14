@@ -891,10 +891,11 @@ export default function App() {
         <div className="sidebar">
           <div className="sidebar-top">
             <button className="sidebar-plus-btn" onClick={() => { setView("editor"); setResult(null); setText(""); setDiagnosis(null); setSaved(false); }} title="Новый приём">+</button>
-            <div className="sidebar-brand">Писарь</div>
+            <div className="sidebar-brand" onClick={() => setView("home")} style={{cursor: "pointer"}}>Писарь</div>
           </div>
           <button className="sidebar-new-btn" onClick={() => { setView("editor"); setResult(null); setText(""); setDiagnosis(null); setSaved(false); }}>+ Новый приём</button>
           <div className="sidebar-menu">
+            <div className={`sidebar-menu-item ${view === "home" ? "active" : ""}`} onClick={() => setView("home")}>Главная</div>
             <div className={`sidebar-menu-item ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
             <div className={`sidebar-menu-item ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
             <div className={`sidebar-menu-item ${view === "template" ? "active" : ""}`} onClick={() => setView("template")}>Шаблоны</div>
@@ -1183,7 +1184,7 @@ export default function App() {
                     {text && <button onClick={clear} className="clear-btn">Очистить</button>}
                   </div>
                 </div>
-                <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={getPlaceholder()} />
+                <textarea className="text-area" value={text} onChange={(e) => setText(e.target.value)} placeholder={getPlaceholder()} />
               </div>
 
               {/* Onboarding — shows when no text and no result */}
