@@ -168,6 +168,9 @@ export default function App() {
   const [spec, setSpec] = useState("therapist");
   const [uziType, setUziType] = useState("uzi_abdominal");
   const [psyMode, setPsyMode] = useState("exam");
+  const [askQuestion, setAskQuestion] = useState("");
+  const [askAnswer, setAskAnswer] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
   const [source, setSource] = useState("mic");
   const [rec, setRec] = useState(false);
   const [text, setText] = useState("");
@@ -315,6 +318,28 @@ export default function App() {
   useEffect(() => { if (token && isDiary) fetchDiarySamples(getSpecKey()); }, [token, psyMode, spec]);
   const fetchRecords = async () => { try { const r = await fetch(`${API}/records`, { headers: authHeaders }); if (r.ok) setRecords(await r.json()); } catch(e){} };
   const fetchTemplates = async () => { try { const r = await fetch(`${API}/templates`, { headers: authHeaders }); if (r.ok) setTemplates(await r.json()); } catch(e){} };
+
+  const sendAskQuestion = async () => {
+    if (!askQuestion.trim() || askLoading) return;
+    setAskLoading(true);
+    setAskAnswer("");
+    try {
+      const fd = new FormData();
+      fd.append("question", askQuestion);
+      const r = await fetch(`${API}/ask`, { method: "POST", body: fd, headers: authHeaders });
+      if (r.ok) {
+        const data = await r.json();
+        setAskAnswer(data.answer || "");
+      } else {
+        const err = await r.json().catch(() => ({}));
+        setAskAnswer("Ошибка: " + (err.detail || "не удалось получить ответ"));
+      }
+    } catch (e) {
+      setAskAnswer("Ошибка сети: " + e.message);
+    } finally {
+      setAskLoading(false);
+    }
+  };
 
   const fetchDiarySamples = async (specKey) => {
     try {
@@ -873,7 +898,7 @@ export default function App() {
             <div className={`sidebar-menu-item ${view === "editor" ? "active" : ""}`} onClick={() => { stopLiveAssist(); setView("editor"); }}>Документация</div>
             <div className={`sidebar-menu-item ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
             <div className={`sidebar-menu-item ${view === "template" ? "active" : ""}`} onClick={() => setView("template")}>Шаблоны</div>
-            <div className="sidebar-menu-item" onClick={() => setShowSamples(!showSamples)}>Обучение стилю</div>
+            <div className="sidebar-menu-item" onClick={() => { setView("editor"); setShowSamples(true); }}>Обучение стилю</div>
           </div>
           {records.length > 0 && (
             <>
@@ -927,7 +952,7 @@ export default function App() {
                 <div className={`topbar-tab ${view === "my-patients" ? "active" : ""}`} onClick={() => setView("my-patients")}>Мои пациенты</div>
               </div>
               <div className="topbar-right">
-                <div className="topbar-badge">{specInfo.label}</div>
+                <div className="topbar-badge clickable" onClick={() => { const el = document.querySelector('.spec-select'); if (el) { el.scrollIntoView({behavior: 'smooth', block: 'center'}); el.focus(); } }}>{specInfo.label} ▾</div>
               </div>
             </div>
           )}
@@ -962,7 +987,7 @@ export default function App() {
                   <div className="welcome-card-title">Помощь с диагнозом</div>
                   <div className="welcome-card-desc">МКБ-10, обоснование и лечение по КР</div>
                 </div>
-                <div className="welcome-card" onClick={() => { setView("editor"); setPsyMode && setPsyMode("diary"); }}>
+                <div className="welcome-card" onClick={() => { setView("editor"); setPsyMode("diary"); }}>
                   <div className="welcome-card-dot purple"></div>
                   <div className="welcome-card-title">Дневники</div>
                   <div className="welcome-card-desc">Генерация дневников за выбранный период</div>
@@ -977,14 +1002,36 @@ export default function App() {
                   <div className="welcome-card-title">Экспорт в Word</div>
                   <div className="welcome-card-desc">Скачайте готовый документ в формате .docx</div>
                 </div>
-                <div className="welcome-card" onClick={() => setShowSamples(true)}>
+                <div className="welcome-card" onClick={() => { setView("editor"); setShowSamples(true); }}>
                   <div className="welcome-card-dot purple"></div>
                   <div className="welcome-card-title">Обучение стилю</div>
                   <div className="welcome-card-desc">Нейросеть пишет в вашей манере</div>
                 </div>
               </div>
               <div className="welcome-ask">
-                <input className="ask-input" placeholder="Задайте медицинский вопрос..." />
+                <div className="ask-row">
+                  <input
+                    className="ask-input"
+                    placeholder="Задайте медицинский вопрос..."
+                    value={askQuestion}
+                    onChange={e => setAskQuestion(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") sendAskQuestion(); }}
+                    disabled={askLoading}
+                  />
+                  <button
+                    className="ask-send-btn"
+                    onClick={sendAskQuestion}
+                    disabled={!askQuestion.trim() || askLoading}
+                  >
+                    {askLoading ? <span className="spinner" /> : "Спросить"}
+                  </button>
+                </div>
+                {askAnswer && (
+                  <div className="ask-answer">
+                    <div className="ask-answer-label">Ответ ИИ</div>
+                    <div className="ask-answer-text">{askAnswer}</div>
+                  </div>
+                )}
               </div>
             </div>
           )}

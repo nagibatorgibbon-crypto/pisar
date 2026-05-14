@@ -1734,6 +1734,31 @@ LEGAL_RULES_PROMPT = """Ты — юридический ИИ-ассистент 
 НЕ придумывай алерты. Только при ЯВНОМ совпадении с триггером."""
 
 
+@app.post("/ask")
+async def ask_question(
+    question: str = Form(...),
+    authorization: str = Header(None),
+):
+    """Простой медицинский вопрос-ответ через ИИ."""
+    if not question.strip():
+        raise HTTPException(status_code=400, detail="Вопрос пустой")
+
+    system_prompt = """Ты — медицинский ИИ-ассистент для врача. Отвечай кратко, по существу и профессионально на русском языке.
+Если вопрос задан пациентом — отвечай так, чтобы помочь врачу быстро сориентироваться: возможные причины, что уточнить у пациента, какие обследования назначить.
+Всегда напоминай в конце, что окончательное решение принимает врач после очного осмотра."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": question[:2000]},
+    ]
+
+    try:
+        answer = await gigachat_complete(messages, max_tokens=2048)
+        return {"answer": answer.strip()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка ИИ: {str(e)}")
+
+
 @app.post("/analyze-legal")
 async def analyze_legal(text: str = Form(...)):
     """Анализ фрагмента разговора на правовые триггеры."""
