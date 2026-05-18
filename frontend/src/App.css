@@ -19,6 +19,16 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .app-wrap { min-height: 100vh; display: flex; }
 .app { display: flex; width: 100%; min-height: 100vh; }
 
+/* ═══ AUTH (login/register) ═══ */
+.auth-wrap { width: 100%; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: linear-gradient(135deg, #ecfdf5 0%, #f0fdfa 100%); }
+.auth-card { width: 100%; max-width: 420px; }
+.auth-logo { display: flex; align-items: center; gap: 12px; justify-content: center; margin-bottom: 24px; }
+.auth-logo-icon { width: 40px; height: 40px; border-radius: 10px; background: var(--green-500); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(13,124,95,0.25); }
+.auth-logo-text { font-size: 22px; font-weight: 800; color: var(--gray-900); letter-spacing: -0.3px; }
+.auth-card .card { padding: 28px 28px 24px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.06); border: 1px solid var(--gray-100); }
+.auth-card .section-label { font-size: 11px; margin-bottom: 18px; }
+.auth-card .cta { margin-top: 4px !important; }
+
 /* ═══ SIDEBAR (desktop) ═══ */
 .sidebar { width: var(--sidebar-w); min-width: var(--sidebar-w); background: var(--green-500); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 100; }
 .sidebar-logo { padding: 18px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.12); }

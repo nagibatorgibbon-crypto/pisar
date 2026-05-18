@@ -869,15 +869,16 @@ export default function App() {
             </div>
             <div className="card">
               <div className="section-label">{authView === "login" ? "Вход" : "Регистрация"}</div>
-              {authView === "register" && <input className="auth-input" placeholder="Имя врача" value={authName} onChange={e => setAuthName(e.target.value)} />}
-              <input className="auth-input" placeholder="Логин" value={authLogin} onChange={e => setAuthLogin(e.target.value)} />
-              <input className="auth-input" type="password" placeholder="Пароль" value={authPass}
+              {authView === "register" && <input className="auth-input" placeholder="Имя врача" autoComplete="name" value={authName} onChange={e => setAuthName(e.target.value)} />}
+              <input className="auth-input" placeholder="Логин" autoComplete="username" value={authLogin} onChange={e => setAuthLogin(e.target.value)} onInput={e => setAuthLogin(e.target.value)} />
+              <input className="auth-input" type="password" placeholder="Пароль" autoComplete="current-password" value={authPass}
                 onChange={e => setAuthPass(e.target.value)}
+                onInput={e => setAuthPass(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && doAuth(authView === "login" ? "/auth/login" : "/auth/register")} />
               {authErr && <div className="error" style={{marginTop:8}}>{authErr}</div>}
               <button onClick={() => doAuth(authView === "login" ? "/auth/login" : "/auth/register")}
-                disabled={authLoading || !authLogin || !authPass}
-                className={`cta ${authLoading || !authLogin || !authPass ? "off" : ""}`} style={{marginTop:12}}>
+                disabled={authLoading}
+                className={`cta ${authLoading ? "off" : ""}`} style={{marginTop:12}}>
                 {authLoading ? <><span className="spinner" />Загрузка...</> : authView === "login" ? "Войти" : "Зарегистрироваться"}
               </button>
               <div className="auth-switch" onClick={() => { setAuthView(authView === "login" ? "register" : "login"); setAuthErr(""); }}>
