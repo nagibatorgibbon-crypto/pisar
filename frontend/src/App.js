@@ -1136,7 +1136,7 @@ export default function App() {
                 </div>
                 {askAnswer && (
                   <div className="ask-answer">
-                    <div className="ask-answer-label">Ответ ИИ</div>
+                    <div className="ask-answer-label">ИИ-ассистент</div>
                     <div className="ask-answer-text"><MarkdownText text={askAnswer} /></div>
                   </div>
                 )}
