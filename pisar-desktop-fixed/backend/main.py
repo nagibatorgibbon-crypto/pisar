@@ -1,0 +1,2182 @@
+"""
+Писарь v4 — Backend API
+FastAPI + Nexara STT + Claude via VseGPT + SQLite + Auth
+Extended specialties + УЗИ templates
+"""
+
+import os
+import json
+import re
+import tempfile
+import sqlite3
+import uuid
+import httpx
+import hashlib
+import secrets
+from datetime import datetime
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import warnings
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+app = FastAPI(title="Писарь API", version="4.0.0")
+
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import pathlib
+
+STATIC_DIR = pathlib.Path(__file__).parent / "static"
+DB_PATH = pathlib.Path(os.environ.get("DATA_DIR", str(pathlib.Path(__file__).parent))) / "pisar.db"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ─── Live Session Manager (WebSocket) ───
+
+import asyncio
+from typing import Dict, Optional
+
+class SessionManager:
+    def __init__(self):
+        self.sessions: Dict[str, dict] = {}  # code -> {phone_ws, computer_ws, text}
+
+    def create_session(self) -> str:
+        """Создаёт новую сессию, возвращает 6-значный код."""
+        while True:
+            code = str(uuid.uuid4())[:6].upper().replace("-", "")[:6]
+            if code not in self.sessions:
+                self.sessions[code] = {"phone": None, "computer": None, "text": ""}
+                return code
+
+    def get_session(self, code: str) -> Optional[dict]:
+        return self.sessions.get(code.upper())
+
+    def cleanup_session(self, code: str):
+        self.sessions.pop(code.upper(), None)
+
+session_manager = SessionManager()
+
+
+@app.post("/session/create")
+async def create_session():
+    """Телефон создаёт новую сессию и получает код."""
+    code = session_manager.create_session()
+    return {"code": code}
+
+
+@app.websocket("/ws/phone/{code}")
+async def phone_ws(websocket: WebSocket, code: str):
+    """WebSocket для телефона — отправляет текст."""
+    code = code.upper()
+    session = session_manager.get_session(code)
+    if not session:
+        await websocket.close(code=4004)
+        return
+    await websocket.accept()
+    session["phone"] = websocket
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            if msg.get("type") == "text":
+                session["text"] = msg["text"]
+                # Пушим на компьютер если подключён
+                if session["computer"]:
+                    try:
+                        await session["computer"].send_text(json.dumps({
+                            "type": "text",
+                            "text": msg["text"]
+                        }))
+                    except Exception:
+                        session["computer"] = None
+            elif msg.get("type") == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+    except WebSocketDisconnect:
+        session["phone"] = None
+        if not session["computer"]:
+            session_manager.cleanup_session(code)
+
+
+@app.websocket("/ws/computer/{code}")
+async def computer_ws(websocket: WebSocket, code: str):
+    """WebSocket для компьютера — получает текст."""
+    code = code.upper()
+    session = session_manager.get_session(code)
+    if not session:
+        await websocket.close(code=4004)
+        return
+    await websocket.accept()
+    session["computer"] = websocket
+    # Уведомляем телефон что компьютер подключился
+    if session["phone"]:
+        try:
+            await session["phone"].send_text(json.dumps({"type": "computer_connected"}))
+        except Exception:
+            pass
+    # Сразу отправляем накопленный текст если есть
+    if session["text"]:
+        await websocket.send_text(json.dumps({"type": "text", "text": session["text"]}))
+    await websocket.send_text(json.dumps({"type": "connected", "message": "Телефон подключён"}))
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            if msg.get("type") == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+    except WebSocketDisconnect:
+        session["computer"] = None
+        if not session["phone"]:
+            session_manager.cleanup_session(code)
+
+
+# ─── Database ───
+
+def get_db():
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT DEFAULT '',
+            login TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            token TEXT UNIQUE,
+            created_at TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS records (
+            id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT '',
+            patient_name TEXT DEFAULT '',
+            diagnosis_code TEXT DEFAULT '',
+            specialty TEXT DEFAULT '',
+            summary TEXT DEFAULT '',
+            sections TEXT DEFAULT '[]',
+            transcript TEXT DEFAULT '',
+            created_at TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS templates (
+            id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT '',
+            name TEXT DEFAULT '',
+            specialty TEXT DEFAULT '',
+            sections_schema TEXT DEFAULT '[]',
+            docx_data BLOB DEFAULT NULL,
+            created_at TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diary_samples (
+            id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT '',
+            specialty_key TEXT DEFAULT '',
+            sample_text TEXT DEFAULT '',
+            created_at TEXT DEFAULT ''
+        )
+    """)
+    try:
+        conn.execute("ALTER TABLE records ADD COLUMN user_id TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE templates ADD COLUMN docx_data BLOB DEFAULT NULL")
+    except Exception:
+        pass
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+# ─── Auto-import built-in templates ───
+
+BUILTIN_TEMPLATES = {
+    "uzi_abdominal.docx": {"name": "УЗИ органов брюшной полости", "specialty": "УЗИ"},
+    "uzi_kidneys.docx": {"name": "УЗИ почек", "specialty": "УЗИ"},
+    "uzi_breast.docx": {"name": "УЗИ молочных желёз", "specialty": "УЗИ"},
+    "uzi_thyroid.docx": {"name": "УЗИ щитовидной железы", "specialty": "УЗИ"},
+    "uzi_gynecology_ta.docx": {"name": "Гинекология (ТА)", "specialty": "УЗИ"},
+    "uzi_gynecology_tavs.docx": {"name": "Гинекология (ТА+ТВ)", "specialty": "УЗИ"},
+    "uzi_gynecology_tavs_early.docx": {"name": "Гинекология ТА+ТВ (ранний срок)", "specialty": "УЗИ"},
+    "uzi_gynecology_tavs_extended.docx": {"name": "Гинекология ТА+ТВ (расширенное)", "specialty": "УЗИ"},
+    "uzi_gynecology_pregnancy_early.docx": {"name": "Гинекология (беременность ранний срок)", "specialty": "УЗИ"},
+    "uzi_gynecology_mindray.docx": {"name": "Гинекология ТА+ТВ (MINDRAY)", "specialty": "УЗИ"},
+    "uzi_pregnancy_late.docx": {"name": "УЗИ беременность (поздний срок)", "specialty": "УЗИ"},
+    "uzi_arteries_upper.docx": {"name": "Дуплекс артерий верхних конечностей", "specialty": "УЗИ"},
+    "uzi_arteries_lower.docx": {"name": "Дуплекс артерий нижних конечностей", "specialty": "УЗИ"},
+    "uzi_veins_upper.docx": {"name": "Дуплекс вен верхних конечностей", "specialty": "УЗИ"},
+    "uzi_veins_lower.docx": {"name": "Дуплекс вен нижних конечностей", "specialty": "УЗИ"},
+    "uzi_knee.docx": {"name": "УЗИ коленных суставов", "specialty": "УЗИ"},
+    "traumatologist_exam.docx": {"name": "Осмотр травматолога-ортопеда", "specialty": "Травматолог"},
+    "psychiatrist_primary_exam.docx": {"name": "Первичный осмотр (психиатр стационар)", "specialty": "Психиатр"},
+}
+
+
+def import_builtin_templates():
+    """Импортирует встроенные шаблоны из папки templates/ при первом запуске."""
+    import logging
+    logger = logging.getLogger("pisar")
+
+    templates_dir = pathlib.Path(__file__).parent / "templates"
+    if not templates_dir.exists():
+        logger.info("No templates directory found, skipping import")
+        return
+
+    conn = get_db()
+    existing = {r["name"] for r in conn.execute("SELECT name FROM templates WHERE user_id = '__builtin__'").fetchall()}
+
+    imported = 0
+    for filename, info in BUILTIN_TEMPLATES.items():
+        if info["name"] in existing:
+            continue
+
+        filepath = templates_dir / filename
+        if not filepath.exists():
+            logger.warning(f"Template file not found: {filename}")
+            continue
+
+        with open(filepath, "rb") as f:
+            docx_data = f.read()
+
+        # Extract sections
+        try:
+            sections = extract_sections_from_docx(docx_data)
+        except Exception as e:
+            logger.warning(f"Failed to parse {filename}: {e}")
+            continue
+
+        tpl_id = str(uuid.uuid4())[:8]
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        conn.execute(
+            "INSERT INTO templates (id, user_id, name, specialty, sections_schema, docx_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tpl_id, "__builtin__", info["name"], info["specialty"], json.dumps(sections, ensure_ascii=False), docx_data, now),
+        )
+        imported += 1
+        logger.info(f"Imported template: {info['name']} ({len(sections)} sections)")
+
+    conn.commit()
+    conn.close()
+    if imported:
+        logger.info(f"Imported {imported} built-in templates")
+
+
+# Import after extract_sections_from_docx is defined (called later at startup)
+
+# OpenRouter API
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = "anthropic/claude-sonnet-4"
+
+
+async def gigachat_complete(messages: list, max_tokens: int = 8192) -> str:
+    api_key = OPENROUTER_API_KEY or os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан в переменных окружения")
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                "https://api.vsegpt.ru/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "max_tokens": max_tokens,
+                    "messages": messages,
+                },
+            )
+        if response.status_code != 200:
+            raise HTTPException(status_code=503, detail=f"VseGPT {response.status_code}: {response.text[:300]}")
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Ошибка VseGPT: {str(e)}")
+
+
+# Nexara API
+NEXARA_API_URL = "https://api.nexara.ru/api/v1/audio/transcriptions"
+NEXARA_API_KEY = os.environ.get("NEXARA_API_KEY", "")
+ALLOWED_AUDIO = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".webm", ".mp4", ".mpeg", ".mpga", ".oga", ".wma", ".aac"}
+
+
+# ─── Auth helpers ───
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def get_user_by_token(token: str):
+    if not token:
+        return None
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE token = ?", (token,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def require_auth(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Необходима авторизация")
+    token = authorization.replace("Bearer ", "")
+    user = get_user_by_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Неверный токен")
+    return user
+
+
+# ─── Auth endpoints ───
+
+@app.post("/auth/register")
+async def register(login: str = Form(...), password: str = Form(...), name: str = Form("")):
+    if len(login) < 3:
+        raise HTTPException(status_code=400, detail="Логин должен быть минимум 3 символа")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Пароль должен быть минимум 4 символа")
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM users WHERE login = ?", (login,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Пользователь с таким логином уже существует")
+    user_id = str(uuid.uuid4())[:8]
+    token = secrets.token_hex(32)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn.execute(
+        "INSERT INTO users (id, name, login, password_hash, token, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, name or login, login, hash_password(password), token, now),
+    )
+    conn.commit()
+    conn.close()
+    return {"token": token, "user": {"id": user_id, "name": name or login, "login": login}}
+
+
+@app.post("/auth/login")
+async def auth_login(login: str = Form(...), password: str = Form(...)):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE login = ?", (login,)).fetchone()
+    conn.close()
+    if not row or row["password_hash"] != hash_password(password):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+    user = dict(row)
+    token = secrets.token_hex(32)
+    conn = get_db()
+    conn.execute("UPDATE users SET token = ? WHERE id = ?", (token, user["id"]))
+    conn.commit()
+    conn.close()
+    return {"token": token, "user": {"id": user["id"], "name": user["name"], "login": user["login"]}}
+
+
+@app.get("/auth/me")
+async def auth_me(authorization: str = Header(None)):
+    user = require_auth(authorization)
+    return {"id": user["id"], "name": user["name"], "login": user["login"]}
+
+
+# ══════════════════════════════════════════════════════════════════
+# ─── ПРОМПТЫ ПО СПЕЦИАЛЬНОСТЯМ ───
+# ══════════════════════════════════════════════════════════════════
+
+# --- Стандартный шаблон истории болезни (для всех кроме психиатров) ---
+
+STANDARD_HISTORY_INSTRUCTIONS = """
+ВАЖНО — формат истории болезни:
+
+АНАМНЕЗ ЗАБОЛЕВАНИЯ (Anamnesis morbi) — пиши связным текстом, хронологически, по следующей структуре:
+1. В течение какого времени считает себя больным
+2. Когда, где и при каких обстоятельствах заболел впервые, первые симптомы
+3. Факторы, способствующие началу заболевания, с чем связывает
+4. Первое обращение к врачу, результаты обследований, диагноз, лечение, эффективность
+5. Последующее течение: динамика симптомов, новые симптомы, частота обострений, длительность ремиссий
+6. Применявшиеся диагностические и лечебные мероприятия, их результаты и эффективность; трудоспособность за период болезни
+
+АНАМНЕЗ ЖИЗНИ (Anamnesis vitae) — пиши связным текстом, включая:
+- Краткие биографические данные: год и место рождения, рост и развитие, образование
+- Отношение к военной службе
+- Семейно-половой анамнез (для женщин: менструации, беременности, роды, климакс)
+- Семейное положение, дети
+- Трудовой анамнез: где и кем работал, профвредности, условия труда
+- Бытовой анамнез: жилищные условия, питание
+- Вредные привычки: курение, алкоголь, наркотики (с указанием количества, стажа)
+- Перенесённые заболевания, операции, травмы
+- Эпидемиологический анамнез: контакты с инфекционными больными, переливания крови, инъекции
+- Аллергологический анамнез: непереносимость лекарств, продуктов, вакцин
+- Страховой анамнез: больничные листы, инвалидность
+- Наследственность: заболевания ближайших родственников"""
+
+
+def make_general_prompt(specialty_name: str, exam_section: str, extra_sections: str = "") -> str:
+    """Генерирует промпт для врача общей практики / узкого специалиста."""
+    return f"""Ты — ИИ-ассистент врача ({specialty_name}). Получив расшифровку речи врача, структурируй её в полноценный медицинский документ приёма.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{{
+  "patient_name": "ФИО пациента если упомянуто, иначе пустая строка",
+  "date": "Дата приёма если упомянута, иначе пустая строка",
+  "specialty": "{specialty_name}",
+  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
+  "sections": [
+    {{
+      "title": "Жалобы",
+      "content": "Основные жалобы с детализацией каждой: локализация, иррадиация, характер (жжение, покалывание, давление и т.д.), провоцирующие факторы, продолжительность и интенсивность, что приносит облегчение, сопутствующие симптомы."
+    }},
+    {{
+      "title": "Анамнез заболевания (Anamnesis morbi)",
+      "content": "Хронологическое связное описание заболевания."
+    }},
+    {{
+      "title": "Анамнез жизни (Anamnesis vitae)",
+      "content": "Связный текст с биографическими данными, семейным, трудовым, бытовым анамнезом, вредными привычками, перенесёнными заболеваниями, аллерго- и эпиданамнезом, наследственностью."
+    }},
+    {exam_section}
+    {extra_sections}
+    {{
+      "title": "Данные специальных исследований",
+      "content": "Результаты лабораторных и инструментальных исследований с датами."
+    }},
+    {{
+      "title": "Диагноз",
+      "content": "Основной диагноз по МКБ-10. Осложнения. Сопутствующие заболевания."
+    }},
+    {{
+      "title": "Обоснование диагноза",
+      "content": "Краткое обоснование на основании жалоб, анамнеза, осмотра и данных обследований."
+    }},
+    {{
+      "title": "Тактика лечения и назначения",
+      "content": "Медикаментозная терапия (препарат, дозировка, кратность, длительность). Немедикаментозное лечение. Обследования. Консультации специалистов. Дата повторного приёма. Рекомендации."
+    }}
+  ],
+  "summary": "Краткое резюме приёма в 1-2 предложения"
+}}
+
+{STANDARD_HISTORY_INSTRUCTIONS}
+
+Правила:
+- Профессиональная медицинская терминология, стиль — как в эталонных медицинских записях
+- Анамнез заболевания и анамнез жизни — СВЯЗНЫМ ТЕКСТОМ, не списком
+- Объективный осмотр — кратко, по системам
+- Обоснование диагноза — аргументированный связный текст
+- Заполняй разделы ТОЛЬКО на основе предоставленных данных
+- Если данных для раздела нет — напиши "Данные не предоставлены"
+- НЕ придумывай информацию, которой нет в расшифровке
+- МКБ-10, русский язык"""
+
+
+# ═══ EXAM SECTIONS BY SPECIALTY ═══
+
+EXAM_THERAPIST = """{
+      "title": "Объективный осмотр (Status praesens)",
+      "content": "Общее состояние, сознание, положение. Телосложение, рост, вес, ИМТ. Кожные покровы и слизистые. Лимфатические узлы. Щитовидная железа. Опорно-двигательная система. Органы дыхания: ЧДД, перкуссия, аускультация. Сердечно-сосудистая система: АД, ЧСС, границы сердца, тоны, шумы. Органы пищеварения: язык, живот, печень, селезёнка, стул. Мочевыделительная система: симптом поколачивания. Нервная система: кратко. Температура тела."
+    },"""
+
+EXAM_NEUROLOGIST = """{
+      "title": "Неврологический осмотр (Status neurologicus)",
+      "content": "Сознание, ориентация. Черепные нервы: I — обоняние; II — острота зрения, поля зрения, глазное дно; III, IV, VI — движения глаз, зрачки, зрачковые рефлексы; V — чувствительность лица, корнеальный рефлекс, жевательные мышцы; VII — мимическая мускулатура, лагофтальм, симптом Белла; VIII — слух, пробы Ринне, Вебера, нистагм, проба Ромберга; IX, X — глотание, фонация, нёбный рефлекс; XI — трапециевидная, грудино-ключично-сосцевидная мышцы; XII — язык. Двигательная сфера: объём движений, мышечная сила, тонус, атрофии, фасцикуляции. Рефлексы: сухожильные D=S, патологические (Бабинского, Оппенгейма и др.). Чувствительность: поверхностная, глубокая. Координация: пальценосовая, пяточно-коленная пробы, адиадохокинез. Менингеальные симптомы: ригидность затылочных мышц, Кернига, Брудзинского. Вегетативная нервная система."
+    },"""
+
+EXAM_CARDIOLOGIST = """{
+      "title": "Кардиологический осмотр",
+      "content": "Общее состояние, сознание. Кожные покровы (цианоз, бледность, отёки). Шейные вены. Пульс: частота, ритм, наполнение, напряжение. АД на обеих руках. Осмотр и пальпация прекордиальной области: верхушечный толчок, сердечный толчок. Перкуссия: границы относительной и абсолютной тупости сердца. Аускультация: тоны (I, II — ясные/ослабленные/усиленные), дополнительные тоны (III, IV, щелчок открытия), шумы (систолический/диастолический, зона максимального выслушивания, проведение, иррадиация). Органы дыхания: ЧДД, аускультация лёгких (хрипы, крепитация). Живот: печень, гепатоюгулярный рефлюкс, асцит. Периферические отёки. Пульсация периферических артерий."
+    },"""
+
+EXAM_SURGEON = """{
+      "title": "Хирургический осмотр (Status localis)",
+      "content": "Общее состояние, сознание, положение. Кожные покровы. Лимфатические узлы. Органы дыхания: кратко. Сердечно-сосудистая система: АД, ЧСС. Живот: форма, участие в дыхании, пальпация (поверхностная — напряжение, болезненность; глубокая — органы), перкуссия, аускультация (перистальтика). Перитонеальные симптомы (Щёткина-Блюмберга, Ровзинга, Ситковского и др.). Печень, желчный пузырь (симптомы Ортнера, Мёрфи, Кера). Селезёнка. Per rectum при показаниях. Status localis: подробное описание области патологии (локализация, размеры, форма, консистенция, болезненность, подвижность, состояние кожи над образованием, регионарные лимфоузлы)."
+    },"""
+
+EXAM_ENDOCRINOLOGIST = """{
+      "title": "Эндокринологический осмотр",
+      "content": "Общее состояние, рост, вес, ИМТ, окружность талии. Кожные покровы (сухость, влажность, стрии, гиперпигментация, витилиго). Подкожно-жировая клетчатка (распределение). Щитовидная железа: пальпация (размеры, консистенция, узлы, болезненность, подвижность), глазные симптомы (экзофтальм, Грефе, Кохера, Мёбиуса). Молочные железы (галакторея). АД, ЧСС. Тремор. Костно-мышечная система (остеопороз). Периферические отёки. Стопы (диабетическая стопа: пульсация, чувствительность, трофические изменения)."
+    },"""
+
+EXAM_GASTROENTEROLOGIST = """{
+      "title": "Гастроэнтерологический осмотр",
+      "content": "Общее состояние, рост, вес, ИМТ. Кожные покровы (желтушность, сосудистые звёздочки, пальмарная эритема). Слизистая полости рта, язык (налёт, отпечатки зубов). Живот: форма, окружность, участие в дыхании, видимая перистальтика. Пальпация поверхностная: напряжение, болезненность, зоны гиперестезии. Пальпация глубокая по Образцову-Стражеско: сигмовидная, слепая, поперечно-ободочная кишка, большая кривизна желудка. Печень: размеры по Курлову, край, поверхность, консистенция. Желчный пузырь: пузырные симптомы. Селезёнка. Поджелудочная железа: точки и зоны болезненности. Перкуссия: свободная жидкость. Аускультация: перистальтика. Стул: характер, частота."
+    },"""
+
+EXAM_PULMONOLOGIST = """{
+      "title": "Пульмонологический осмотр",
+      "content": "Общее состояние, сознание, положение. Кожные покровы (цианоз, акроцианоз). Форма грудной клетки. Тип дыхания, участие вспомогательных мышц. ЧДД, SpO2. Пальпация грудной клетки: голосовое дрожание, резистентность. Перкуссия: сравнительная и топографическая (границы лёгких, экскурсия). Аускультация: основные дыхательные шумы (везикулярное, бронхиальное, ослабленное, жёсткое), побочные (хрипы сухие/влажные, крепитация, шум трения плевры). Бронхофония. АД, ЧСС, тоны сердца. Пальцы (барабанные палочки, часовые стёкла)."
+    },"""
+
+EXAM_OPHTHALMOLOGIST = """{
+      "title": "Офтальмологический осмотр",
+      "content": "Острота зрения: OD, OS (без коррекции / с коррекцией). Рефрактометрия. Поля зрения (периметрия). Цветоощущение. Веки, конъюнктива, слёзные органы. Положение глазных яблок, подвижность. Роговица (биомикроскопия). Передняя камера. Радужка, зрачок, зрачковые реакции. Хрусталик. Стекловидное тело. Глазное дно (офтальмоскопия): диск зрительного нерва, сосуды сетчатки, макулярная область, периферия. Тонометрия (ВГД): OD, OS. Биомикроскопия."
+    },"""
+
+EXAM_UROLOGIST = """{
+      "title": "Урологический осмотр",
+      "content": "Общее состояние. Живот: пальпация в проекции почек, мочеточниковые точки, симптом поколачивания. Наружные половые органы: осмотр, пальпация. Предстательная железа (per rectum): размеры, консистенция, поверхность, болезненность, междолевая борозда. Мочевой пузырь: перкуссия. Мочеиспускание: характер, частота, болезненность, цвет мочи. АД, ЧСС. Периферические отёки."
+    },"""
+
+EXAM_GYNECOLOGIST = """{
+      "title": "Гинекологический осмотр",
+      "content": "Общее состояние. Молочные железы: осмотр, пальпация, выделения. Живот: пальпация. Наружные половые органы: осмотр. Осмотр в зеркалах: шейка матки (форма, поверхность, цвет, выделения из цервикального канала), стенки влагалища. Бимануальное исследование: матка (положение, размеры, консистенция, подвижность, болезненность), придатки (справа, слева — пальпируются/не пальпируются, образования, болезненность), своды (свободные, нависание). Выделения: характер, цвет, количество, запах."
+    },"""
+
+EXAM_ORTHOPEDIST = """{
+      "title": "Ортопедический осмотр",
+      "content": "Общее состояние. Телосложение, рост, вес. Осмотр спереди: высота надплечий, треугольники талии, перекос таза. Осмотр сбоку: шейный лордоз, грудной кифоз, поясничный лордоз, положение таза. Осмотр сзади: лопатки, сколиотическая деформация, мышцы спины, пальпация паравертебральных точек, осевая нагрузка. Верхние конечности: длина (анатомическая, проекционная), объём движений в суставах, деформации. Нижние конечности: длина, объём движений в тазобедренных, коленных, голеностопных суставах. Коленные суставы: симптомы ПВЯ, ЗВЯ, баллотирование надколенника, Байкова. Стопы: своды, постановка. Чувствительность на периферии. Пульсация периферических артерий. Status localis."
+    },"""
+
+EXAM_ENT = """{
+      "title": "ЛОР-осмотр",
+      "content": "Нос: наружный осмотр, пальпация, передняя риноскопия (слизистая, носовые раковины, перегородка, отделяемое). Носовое дыхание. Обоняние. Придаточные пазухи: пальпация, перкуссия точек выхода ветвей тройничного нерва. Глотка: осмотр ротоглотки (слизистая, миндалины — размер, содержимое лакун, задняя стенка глотки). Гортань: непрямая ларингоскопия (голосовые связки, подвижность, слизистая, просвет). Голос: охриплость, афония. Уши: наружный осмотр, пальпация сосцевидного отростка, отоскопия (наружный слуховой проход, барабанная перепонка — цвет, световой конус, перфорация, отделяемое). Слух: шёпотная и разговорная речь, камертональные пробы (Ринне, Вебера). Вестибулярная функция."
+    },"""
+
+EXAM_DERMATOLOGIST = """{
+      "title": "Дерматологический осмотр (Status localis)",
+      "content": "Кожные покровы: общее описание (цвет, тургор, влажность, температура). Слизистые оболочки. Ногти, волосы. Лимфатические узлы. Status localis — описание высыпаний: локализация, распространённость (ограниченный/распространённый/диффузный процесс), симметричность, характер расположения (группировка, линейность, кольцевидность). Первичные элементы (пятно, папула, бугорок, узел, волдырь, пузырёк, пузырь, гнойничок). Вторичные элементы (эрозия, язва, корка, чешуйка, рубец, лихенификация, трещина). Размеры, форма, границы, цвет, поверхность, консистенция. Дерматоскопия при показаниях. Феномены (Кёбнера, Ауспитца, стеариновой свечи и др.)."
+    },"""
+
+EXAM_ALLERGIST = """{
+      "title": "Аллергологический осмотр",
+      "content": "Общее состояние. Кожные покровы (сыпь, крапивница, дерматит, отёк Квинке). Слизистые: конъюнктива (гиперемия, отёк, слезотечение), нос (ринорея, чихание, затруднение дыхания). Органы дыхания: ЧДД, SpO2, перкуссия, аускультация (сухие свистящие хрипы, удлинение выдоха). Пикфлоуметрия / спирометрия. Сердечно-сосудистая система: АД, ЧСС. Живот: кратко. Периферические отёки. Лимфатические узлы. Аллергологическое обследование: результаты кожных проб, уровень IgE, специфические IgE."
+    },"""
+
+EXAM_RADIOLOGIST = """{
+      "title": "Описание исследования",
+      "content": "Метод исследования (рентгенография/КТ/МРТ/флюорография), область исследования, проекции, контрастное усиление (если применялось). Системное описание по области: костные структуры, мягкие ткани, органы, сосуды, патологические образования (локализация, размеры, форма, контуры, структура, плотность/интенсивность сигнала, накопление контраста). Сравнение с предыдущими исследованиями (если есть)."
+    },"""
+
+EXAM_PEDIATRICIAN = """{
+      "title": "Объективный осмотр",
+      "content": "Общее состояние, сознание, активность. Температура тела. Кожные покровы и видимые слизистые. Зев, миндалины. Лимфатические узлы. Носовое дыхание. Органы дыхания: ЧДД, аускультация. Сердечно-сосудистая система: ЧСС, тоны. Живот: пальпация. Стул, мочеиспускание."
+    },
+    {{
+      "title": "Физическое развитие",
+      "content": "Возраст. Вес, рост. Соответствие возрастным нормам, центильные коридоры."
+    }},"""
+
+
+# ═══ GENERATE ALL GENERAL SPECIALTY PROMPTS ═══
+
+PROMPTS = {}
+
+# Терапевт
+PROMPTS["therapist"] = make_general_prompt("Терапевт", EXAM_THERAPIST)
+
+# Невролог
+PROMPTS["neurologist"] = make_general_prompt("Невролог", EXAM_NEUROLOGIST)
+
+# Кардиолог
+PROMPTS["cardiologist"] = make_general_prompt("Кардиолог", EXAM_CARDIOLOGIST)
+
+# Хирург
+PROMPTS["surgeon"] = make_general_prompt("Хирург", EXAM_SURGEON)
+
+# Эндокринолог
+PROMPTS["endocrinologist"] = make_general_prompt("Эндокринолог", EXAM_ENDOCRINOLOGIST)
+
+# Гастроэнтеролог
+PROMPTS["gastroenterologist"] = make_general_prompt("Гастроэнтеролог", EXAM_GASTROENTEROLOGIST)
+
+# Пульмонолог
+PROMPTS["pulmonologist"] = make_general_prompt("Пульмонолог", EXAM_PULMONOLOGIST)
+
+# Офтальмолог
+PROMPTS["ophthalmologist"] = make_general_prompt("Офтальмолог", EXAM_OPHTHALMOLOGIST)
+
+# Уролог
+PROMPTS["urologist"] = make_general_prompt("Уролог", EXAM_UROLOGIST)
+
+# Гинеколог
+PROMPTS["gynecologist"] = make_general_prompt("Гинеколог", EXAM_GYNECOLOGIST)
+
+# Ортопед-травматолог
+PROMPTS["orthopedist"] = make_general_prompt("Ортопед-травматолог", EXAM_ORTHOPEDIST)
+
+# ЛОР
+PROMPTS["ent"] = make_general_prompt("Оториноларинголог", EXAM_ENT)
+
+# Дерматолог
+PROMPTS["dermatologist"] = make_general_prompt("Дерматолог", EXAM_DERMATOLOGIST)
+
+# Аллерголог-иммунолог
+PROMPTS["allergist"] = make_general_prompt("Аллерголог-иммунолог", EXAM_ALLERGIST)
+
+# Рентгенолог — специальный формат без анамнеза жизни
+PROMPTS["radiologist"] = """Ты — ИИ-ассистент врача-рентгенолога. Получив расшифровку речи врача, структурируй её в протокол описания исследования.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "ФИО пациента если упомянуто, иначе пустая строка",
+  "date": "Дата исследования если упомянута, иначе пустая строка",
+  "specialty": "Рентгенолог",
+  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
+  "sections": [
+    {
+      "title": "Метод и область исследования",
+      "content": "Вид исследования, область, проекции, контрастное усиление."
+    },
+    {
+      "title": "Описание",
+      "content": "Системное описание выявленных изменений по анатомическим структурам."
+    },
+    {
+      "title": "Заключение",
+      "content": "Заключение по результатам исследования."
+    },
+    {
+      "title": "Рекомендации",
+      "content": "Дополнительные исследования, контроль в динамике."
+    }
+  ],
+  "summary": "Краткое резюме в 1 предложение"
+}
+
+Правила:
+- Профессиональная рентгенологическая терминология
+- Заполняй ТОЛЬКО на основе предоставленных данных
+- Нет данных = "Данные не предоставлены"
+- НЕ придумывай, русский язык"""
+
+# Педиатр
+PROMPTS["pediatrician"] = make_general_prompt("Педиатр", EXAM_PEDIATRICIAN, """
+    {
+      "title": "Анамнез жизни (педиатрический)",
+      "content": "Течение беременности и родов у матери. Вес и рост при рождении, оценка по Апгар. Вскармливание (грудное/искусственное). Психомоторное развитие. Прививки (по календарю/нет). Аллергологический анамнез. Наследственность."
+    },""").replace(
+    '"title": "Анамнез жизни (Anamnesis vitae)"',
+    '"title": "Анамнез жизни (общий)"'
+)
+
+
+# ═══ ПСИХИАТРИЧЕСКИЕ ПРОМПТЫ (без изменений) ═══
+
+PROMPTS["psychiatrist"] = """Ты — ИИ-ассистент психиатра психоневрологического диспансера (ПНД). Получив расшифровку речи врача, структурируй её в документ первичного осмотра пациента по ТОЧНОМУ формату ПНД.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента если упомянута, иначе пустая строка",
+  "date": "Дата приёма если упомянута, иначе пустая строка",
+  "specialty": "Психиатр",
+  "diagnosis_code": "Код МКБ-10 если определён, иначе пустая строка",
+  "sections": [
+    {
+      "title": "Обращение",
+      "content": "Обратился в ДС: первично/повторно; цель."
+    },
+    {
+      "title": "Жалобы",
+      "content": "Жалобы пациента в кавычках, как высказывает сам пациент."
+    },
+    {
+      "title": "Анамнез жизни",
+      "content": "Место рождения, семья, раннее развитие, образование, работа, семейное положение, проживание, оружие, водительские права."
+    },
+    {
+      "title": "Криминальный анамнез",
+      "content": "Судимости, привлечения."
+    },
+    {
+      "title": "Перенесённые заболевания",
+      "content": "Детские инфекции, ЧМТ, операции, хронические заболевания."
+    },
+    {
+      "title": "Данные обследований",
+      "content": "Результаты обследований с датами."
+    },
+    {
+      "title": "Аллергоанамнез",
+      "content": "Аллергические реакции."
+    },
+    {
+      "title": "Эпиданамнез",
+      "content": "Контакты с инфекционными больными."
+    },
+    {
+      "title": "Наркоанамнез",
+      "content": "Курение, алкоголь, наркотики."
+    },
+    {
+      "title": "Анамнез заболевания",
+      "content": "Психопатологическая наследственность, дебют, хронология, госпитализации, терапия."
+    },
+    {
+      "title": "Психическое состояние",
+      "content": "Сознание, ориентировка, внешний вид, контакт, речь, мышление, восприятие, эмоции, воля, критика."
+    },
+    {
+      "title": "Соматический статус",
+      "content": "Общее состояние, кожа, тоны сердца, АД, ЧСС, дыхание, живот, отёки."
+    },
+    {
+      "title": "Неврологический статус",
+      "content": "Лицо, зрачки, язык, рефлексы, тонус, Ромберг, ПНП, менингеальные симптомы."
+    },
+    {
+      "title": "Обоснование диагноза",
+      "content": "Обоснование на основании анамнеза, клиники, динамики."
+    },
+    {
+      "title": "Диагноз",
+      "content": "Основной диагноз с кодом МКБ-10. Сопутствующие."
+    },
+    {
+      "title": "Социальный статус",
+      "content": "Работа, инвалидность, ЦЗН."
+    },
+    {
+      "title": "План обследования и лечения",
+      "content": "Режим, диета, обследования, фармакотерапия, психотерапия."
+    }
+  ],
+  "summary": "Краткое резюме осмотра в 1-2 предложения"
+}
+
+Правила:
+- Стиль психиатрических записей ПНД
+- Жалобы в кавычках — как говорит сам пациент
+- Анамнез жизни и заболевания — связным текстом
+- Психическое состояние — связным текстом, описательно
+- Соматический и неврологический статус — кратко
+- Заполняй ТОЛЬКО на основе данных
+- Нет данных = "Данные не предоставлены"
+- НЕ придумывай, МКБ-10, русский язык
+- Формальную преамбулу НЕ включай — она добавляется автоматически"""
+
+PROMPTS["psychiatrist_diary"] = """Ты — ИИ-ассистент психиатра ПНД. Составь дневниковые записи наблюдения.
+
+ВАЖНО: В тексте будет указан период и количество записей. Создай РОВНО столько записей через каждые 3 дня.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента если упомянута",
+  "date": "",
+  "specialty": "Психиатр (дневник)",
+  "diagnosis_code": "Код МКБ-10 если определён",
+  "sections": [
+    {"title": "ДД.ММ.ГГГГ", "content": "Краткая запись 2-5 предложений."}
+  ],
+  "summary": "Общая динамика за период"
+}
+
+Правила:
+- Записи 2-5 предложений, показывай динамику
+- Чередуй стили: от лица пациента / описание врача
+- Реалистичная динамика, бывают откаты
+- Пиши на русском языке"""
+
+PROMPTS["psychiatrist_pnd"] = """Ты — ИИ-ассистент психиатра ПНД. Структурируй расшифровку в документ осмотра ПНД.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента",
+  "date": "Дата приёма",
+  "specialty": "Психиатр ПНД",
+  "diagnosis_code": "Код МКБ-10",
+  "sections": [
+    {"title": "Жалобы", "content": "Жалобы пациента в кавычках"},
+    {"title": "Анамнез жизни", "content": "Краткие данные"},
+    {"title": "Анамнез заболевания", "content": "История расстройства"},
+    {"title": "Психическое состояние", "content": "Описание статуса"},
+    {"title": "Соматический статус", "content": "Краткое описание"},
+    {"title": "Неврологический статус", "content": "Краткое описание"},
+    {"title": "Диагноз", "content": "Диагноз с МКБ-10"},
+    {"title": "Назначения", "content": "Препараты, дозировки, рекомендации"}
+  ],
+  "summary": "Краткое резюме"
+}
+
+Правила: стиль ПНД, жалобы в кавычках, только из данных врача."""
+
+PROMPTS["psychiatrist_pnd_diary"] = """Ты — ИИ-ассистент психиатра ПНД. Составь дневниковые записи.
+
+В тексте ВСЕГДА будет список ОБЯЗАТЕЛЬНЫХ ДАТ. Создай ровно по одной записи для КАЖДОЙ даты.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента",
+  "date": "",
+  "specialty": "Психиатр ПНД (дневник)",
+  "diagnosis_code": "Код МКБ-10",
+  "sections": [
+    {"title": "ДД.ММ.ГГГГ", "content": "Краткая запись 2-4 предложения."}
+  ],
+  "summary": "Динамика за период"
+}
+
+ПРАВИЛА:
+- sections содержит РОВНО столько элементов сколько дат в списке
+- Используй ТОЛЬКО даты из списка
+- 2-4 предложения, показывай динамику
+- Русский язык"""
+
+PROMPTS["psychiatrist_stac_exam"] = """Ты — ИИ-ассистент врача-психиатра стационара. Структурируй расшифровку в документ первичного осмотра стационарного пациента.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "ФИО пациента",
+  "date": "Дата поступления",
+  "specialty": "Психиатр стационара",
+  "diagnosis_code": "Код МКБ-10",
+  "sections": [
+    {"title": "Жалобы", "content": "Жалобы пациента"},
+    {"title": "Анамнез жизни", "content": "Биография, семья, образование, работа, судимости, оружие, права"},
+    {"title": "Страховой анамнез", "content": "Работа, больничные, инвалидность"},
+    {"title": "Сопутствующие заболевания", "content": "ЧМТ, операции, хронические болезни"},
+    {"title": "Эпиданамнез", "content": "Контакты, COVID, туберкулёз, гепатиты, ВИЧ"},
+    {"title": "Наркологический анамнез", "content": "Курение, алкоголь, наркотики"},
+    {"title": "Аллергологический анамнез", "content": "Аллергии"},
+    {"title": "Анамнез заболевания", "content": "Наследственность, дебют, течение, госпитализации, терапия"},
+    {"title": "Психическое состояние при осмотре", "content": "Развёрнутый психический статус"},
+    {"title": "Физикальное исследование", "content": "Соматический статус"},
+    {"title": "Локальный (психический) статус", "content": "Развёрнутое описание"},
+    {"title": "Предварительный диагноз", "content": "С кодами МКБ-10"},
+    {"title": "Обоснование диагноза", "content": "Обоснование"},
+    {"title": "Обоснование стационарного лечения", "content": "Показания к госпитализации"},
+    {"title": "Назначения", "content": "Препараты с дозировками"}
+  ],
+  "summary": "Краткое резюме поступления"
+}
+
+Правила: стиль стационарной документации, заполняй только из данных врача."""
+
+PROMPTS["psychiatrist_stac_diary"] = """Ты — ИИ-ассистент врача-психиатра стационара. Составь дневниковые записи наблюдения.
+
+В тексте ВСЕГДА будет список ОБЯЗАТЕЛЬНЫХ ДАТ. Создай ровно по одной записи для КАЖДОЙ даты.
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{
+  "patient_name": "Фамилия пациента",
+  "date": "",
+  "specialty": "Психиатр стационара (дневник)",
+  "diagnosis_code": "Код МКБ-10",
+  "sections": [
+    {"title": "ДД.ММ.ГГГГ", "content": "По докладу медперсонала: [поведение]. Жалобы. Психический статус. Динамика. Назначения."}
+  ],
+  "summary": "Динамика за период"
+}
+
+ПРАВИЛА:
+- sections содержит РОВНО столько элементов сколько дат в списке
+- Краткий клинический стиль
+- Динамика на фоне терапии
+- Русский язык"""
+
+
+# ═══ УЗИ ПРОМПТЫ С ШАБЛОНАМИ ═══
+
+UZI_TEMPLATES = {
+    "uzi_abdominal": {
+        "label": "Органы брюшной полости",
+        "template": """ПЕЧЕНЬ: Акустический доступ, расположение, контуры. Размеры: правая доля КВР __ мм, левая доля __x__ мм, хвостатая доля __ мм. Структура паренхимы, эхогенность. Объёмные образования (ЦДК). Сосудистый рисунок. Внутрипеченочные протоки. ЦДК: печёночные вены, воротная вена (диаметр, проходимость, кровоток, V), НПВ.
+ЖЕЛЧНЫЙ ПУЗЫРЬ: Расположение, форма, перегибы. Стенки (__ мм). Просвет. Холедох.
+ПОДЖЕЛУДОЧНАЯ ЖЕЛЕЗА: Акустический доступ. Размеры: головка __ мм, тело __ мм, хвост __ мм. Контуры, эхогенность, структура. Вирсунгов проток. Объёмные образования.
+СЕЛЕЗЁНКА: Расположение, форма. Размеры __x__ см, S=__ см². Контуры, структура, эхогенность. Объёмные образования. Селезёночная вена (__ мм, V).
+Забрюшинные лимфоузлы. Свободная жидкость в брюшной полости.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_kidneys": {
+        "label": "Почки",
+        "template": """ПРАВАЯ ПОЧКА: Акустический доступ, расположение, форма, контуры. Размеры __x__ мм. Толщина паренхимы __ мм. Структура, эхогенность. Кортико-медулярная дифференцировка. Сосудистый рисунок. ЧЛС. Почечный синус. Физиологическая подвижность. Объёмные образования (ЦДК).
+ЛЕВАЯ ПОЧКА: Акустический доступ, расположение, форма, контуры. Размеры __x__ мм. Толщина паренхимы __ мм. Структура, эхогенность. Кортико-медулярная дифференцировка. Сосудистый рисунок. ЧЛС. Почечный синус. Физиологическая подвижность. Объёмные образования (ЦДК).
+При сканировании стоя: правая почка смещается на __ см, левая на __ см.
+Надпочечники.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_thyroid": {
+        "label": "Щитовидная железа",
+        "template": """Акустический доступ, расположение, контуры, форма. Размеры: перешеек __ см, правая доля __x__x__ см V=__ см³, левая доля __x__x__ см V=__ см³. Общий объём V=__ см³. Структура, эхогенность. Объёмные образования (ЦДК): справа, слева. Васкуляризация (V, RI). Регионарные лимфоузлы. Паращитовидные железы.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_breast": {
+        "label": "Молочные железы",
+        "template": """Акустический доступ. День МЦ. Гормональная терапия. Оперативные вмешательства. Данные осмотра: симметричность, кожные покровы, ареолы, соски. Тип строения (железистый/жировой/смешанный). УЗ-архитектоника. Эхогенность. Млечные протоки. Объёмные образования (ЦДК): справа, слева. Регионарные лимфоузлы.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_gynecology_ta": {
+        "label": "Гинекология (трансабдоминальное)",
+        "template": """Дата последней менструации, день цикла. Акустический доступ.
+МАТКА: положение, размеры (длина __ мм, толщина __ мм, ширина __ мм, V=__ мл). Контуры, форма. Миометрий, сосудистый рисунок. Полость матки. Толщина эндометрия __ мм, структура.
+ШЕЙКА МАТКИ: размеры, форма, строение. Цервикальный канал.
+ВЛАГАЛИЩЕ.
+ПРАВЫЙ ЯИЧНИК: размеры __x__x__ мм, V=__ мл. Фолликулярный аппарат. Васкуляризация. Образования.
+ЛЕВЫЙ ЯИЧНИК: размеры __x__x__ мм, V=__ мл. Фолликулярный аппарат. Васкуляризация. Образования.
+Маточные трубы. Венозное сплетение. Свободная жидкость.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_gynecology_tavs": {
+        "label": "Гинекология (ТА + ТВ)",
+        "template": """Дата последней менструации, день цикла. Менопауза/постменопауза. Б-Р-А-В. Гормональная терапия. Оперативные вмешательства. Акустический доступ.
+МАТКА: положение, размеры (длина __ мм, толщина __ мм, ширина __ мм, V=__ мл). Контуры, передняя стенка __ мм, задняя __ мм. Миометрий. Полость матки. Эндометрий __ мм, граница с миометрием, структура.
+ШЕЙКА МАТКИ: размеры, строение. Цервикальный канал.
+Мочевой пузырь. Влагалище.
+ПРАВЫЙ ЯИЧНИК: тракция, размеры, V. Фолликулярный аппарат (количество, диаметры антральных фолликулов). Капсула. Васкуляризация. Образования.
+ЛЕВЫЙ ЯИЧНИК: тракция, размеры, V. Фолликулярный аппарат. Капсула. Васкуляризация. Образования.
+Маточные трубы. Венозное сплетение (V). Свободная жидкость.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_pregnancy": {
+        "label": "Беременность (поздний срок)",
+        "template": """Дата последней менструации, срок беременности. Вид исследования: трансабдоминальный.
+В полости матки определяется __ живой плод(а).
+БПР __ мм, ДБ __ мм, соответствует сроку беременности, ПДР __.
+Сердцебиение плода __ уд/мин.
+Врождённые пороки развития плода.
+УЗ-маркёры хромосомных болезней.
+Околоплодные воды: АИ __ мм.
+Хорион/плацента: расположение, толщина __ мм, структура, степень зрелости.
+Цервикальный канал: длина __ мм, внутренний зев.
+Миометрий.
+Визуализация.
+ЗАКЛЮЧЕНИЕ: Беременность __ недель.
+РЕКОМЕНДАЦИИ:"""
+    },
+    "uzi_arteries_upper": {
+        "label": "Артерии верхних конечностей",
+        "template": """СПРАВА: Лучевая, локтевая, плечевая, подмышечная артерии — просвет, контрастирование ЦДК, тип кровотока.
+СЛЕВА: Лучевая, локтевая, плечевая, подмышечная артерии — просвет, контрастирование ЦДК, тип кровотока.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_arteries_lower": {
+        "label": "Артерии нижних конечностей",
+        "template": """СПРАВА: Анатомический ход. ОБА, ГБА, ПБА, ПкА, ПББА, ЗББА — стенозы, тип кровотока.
+СЛЕВА: Анатомический ход. ОБА, ГБА, ПБА, ПкА, ПББА, ЗББА — стенозы, тип кровотока.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_veins_upper": {
+        "label": "Вены верхних конечностей",
+        "template": """ГЛУБОКИЕ ВЕНЫ:
+Справа: лучевые, локтевые, плечевые, подмышечная вены — проходимость, сжимаемость, ЦДК.
+Слева: лучевые, локтевые, плечевые, подмышечная вены — проходимость, сжимаемость, ЦДК.
+ПОВЕРХНОСТНЫЕ ВЕНЫ:
+Справа: медиальная, латеральная подкожные, срединная вена предплечья, срединная вена локтя, перфорантные вены.
+Слева: медиальная, латеральная подкожные, срединная вена предплечья, срединная вена локтя, перфорантные вены.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_veins_lower": {
+        "label": "Вены нижних конечностей",
+        "template": """ГЛУБОКИЕ ВЕНЫ:
+Справа: ОБВ, ПБВ, ГБВ, ПкВ, вены голени — проходимость, сжимаемость, ЦДК, клапаны.
+Слева: ОБВ, ПБВ, ГБВ, ПкВ, вены голени — проходимость, сжимаемость, ЦДК, клапаны.
+ПОВЕРХНОСТНЫЕ ВЕНЫ:
+Справа: БПВ (проходимость, рефлюкс, диаметр, СФС, Вальсальва, варикозные притоки). МПВ (проходимость, СПС, клапаны).
+Слева: БПВ (проходимость, рефлюкс, диаметр, СФС, Вальсальва, варикозные притоки). МПВ (проходимость, СПС, клапаны).
+Все измерения в положении стоя.
+ЗАКЛЮЧЕНИЕ:"""
+    },
+    "uzi_knee": {
+        "label": "Коленные суставы",
+        "template": """ПРАВЫЙ КОЛЕННЫЙ СУСТАВ: Контуры суставных поверхностей бедренной и большеберцовой костей. Сухожилие четырёхглавой мышцы бедра. Собственная связка надколенника. Мениски (видимые отделы). Выпот: b.suprapatellaris, b.suptendinea prepatellaris, b.infrapatellaris profunda. Синовиальная оболочка. Эпифизы.
+ЛЕВЫЙ КОЛЕННЫЙ СУСТАВ: Контуры суставных поверхностей. Сухожилие четырёхглавой мышцы бедра. Собственная связка надколенника. Мениски. Выпот. Синовиальная оболочка. Эпифизы.
+ЗАКЛЮЧЕНИЕ:
+РЕКОМЕНДАЦИИ:"""
+    },
+}
+
+
+def make_uzi_prompt(uzi_type: str) -> str:
+    """Генерирует промпт для конкретного УЗИ-исследования."""
+    info = UZI_TEMPLATES.get(uzi_type)
+    if not info:
+        return PROMPTS.get("therapist", "")
+    return f"""Ты — ИИ-ассистент врача ультразвуковой диагностики. Получив расшифровку речи врача, структурируй её в протокол УЗ-исследования: {info['label']}.
+
+Вот ШАБЛОН протокола (заполни на основе данных врача, нормативные значения в скобках оставь для справки):
+
+{info['template']}
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{{
+  "patient_name": "ФИО пациента если упомянуто, иначе пустая строка",
+  "date": "Дата исследования если упомянута, иначе пустая строка",
+  "specialty": "УЗИ — {info['label']}",
+  "diagnosis_code": "",
+  "sections": [
+    {{
+      "title": "Протокол исследования",
+      "content": "Полный протокол по шаблону, заполненный данными из расшифровки врача. Пустые поля заполни нормативными значениями, отметив это."
+    }},
+    {{
+      "title": "Заключение",
+      "content": "Заключение по результатам УЗИ."
+    }},
+    {{
+      "title": "Рекомендации",
+      "content": "Рекомендации если озвучены врачом."
+    }}
+  ],
+  "summary": "Краткое резюме в 1 предложение"
+}}
+
+Правила:
+- Профессиональная терминология УЗ-диагностики
+- Сохраняй структуру шаблона: разделы, подразделы, единицы измерения
+- Числовые значения — строго из данных врача; если не озвучены — оставь пустые поля (__)
+- Заключение: «Данное УЗ-заключение не является диагнозом. Окончательный диагноз устанавливает врач по результатам комплексного обследования.»
+- НЕ придумывай данные, русский язык"""
+
+# Добавляем все УЗИ-промпты
+for uzi_key in UZI_TEMPLATES:
+    PROMPTS[uzi_key] = make_uzi_prompt(uzi_key)
+
+
+# ─── API: список специальностей и УЗИ-типов ───
+
+@app.get("/specialties")
+async def get_specialties():
+    """Возвращает список доступных специальностей и УЗИ-подтипов."""
+    return {
+        "specialties": [
+            {"key": "therapist", "label": "Терапевт", "group": "therapy"},
+            {"key": "neurologist", "label": "Невролог", "group": "therapy"},
+            {"key": "cardiologist", "label": "Кардиолог", "group": "therapy"},
+            {"key": "gastroenterologist", "label": "Гастроэнтеролог", "group": "therapy"},
+            {"key": "pulmonologist", "label": "Пульмонолог", "group": "therapy"},
+            {"key": "endocrinologist", "label": "Эндокринолог", "group": "therapy"},
+            {"key": "allergist", "label": "Аллерголог", "group": "therapy"},
+            {"key": "surgeon", "label": "Хирург", "group": "surgery"},
+            {"key": "orthopedist", "label": "Травматолог", "group": "surgery"},
+            {"key": "urologist", "label": "Уролог", "group": "surgery"},
+            {"key": "gynecologist", "label": "Гинеколог", "group": "surgery"},
+            {"key": "ent", "label": "ЛОР", "group": "surgery"},
+            {"key": "ophthalmologist", "label": "Офтальмолог", "group": "surgery"},
+            {"key": "dermatologist", "label": "Дерматолог", "group": "surgery"},
+            {"key": "pediatrician", "label": "Педиатр", "group": "other"},
+            {"key": "radiologist", "label": "Рентгенолог", "group": "diagnostics"},
+            {"key": "psychiatrist", "label": "Психиатр ПНД", "group": "psychiatry", "hasDiary": True, "diaryKey": "psychiatrist_pnd_diary"},
+            {"key": "psychiatrist_stac", "label": "Психиатр стац.", "group": "psychiatry", "hasDiary": True, "diaryKey": "psychiatrist_stac_diary"},
+        ],
+        "uzi_types": [
+            {"key": "uzi_abdominal", "label": "Органы брюшной полости"},
+            {"key": "uzi_kidneys", "label": "Почки"},
+            {"key": "uzi_thyroid", "label": "Щитовидная железа"},
+            {"key": "uzi_breast", "label": "Молочные железы"},
+            {"key": "uzi_gynecology_ta", "label": "Гинекология (ТА)"},
+            {"key": "uzi_gynecology_tavs", "label": "Гинекология (ТА+ТВ)"},
+            {"key": "uzi_pregnancy", "label": "Беременность"},
+            {"key": "uzi_arteries_upper", "label": "Артерии верхних кон."},
+            {"key": "uzi_arteries_lower", "label": "Артерии нижних кон."},
+            {"key": "uzi_veins_upper", "label": "Вены верхних кон."},
+            {"key": "uzi_veins_lower", "label": "Вены нижних кон."},
+            {"key": "uzi_knee", "label": "Коленные суставы"},
+        ]
+    }
+
+
+# ─── API endpoints ───
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "4.0.0"}
+
+
+@app.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    if not NEXARA_API_KEY:
+        raise HTTPException(status_code=500, detail="NEXARA_API_KEY не задан")
+
+    filename = audio.filename or "audio.webm"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext and ext not in ALLOWED_AUDIO:
+        raise HTTPException(status_code=400, detail=f"Формат {ext} не поддерживается.")
+
+    suffix = ext or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await audio.read()
+        if len(content) > 100 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Файл слишком большой (макс 100 МБ)")
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    converted_wav = tmp_path + "_converted.wav"
+    converted_mp3 = tmp_path + "_converted.mp3"
+    send_path = tmp_path
+    send_filename = filename
+    import subprocess
+    import logging
+    logger = logging.getLogger("pisar")
+
+    file_size = os.path.getsize(tmp_path)
+    logger.info(f"Transcribe: {filename}, size={file_size}, ext={ext}")
+
+    # Если файл слишком маленький — скорее всего пустая запись
+    if file_size < 500:
+        raise HTTPException(status_code=400, detail="Запись слишком короткая. Попробуйте записать дольше.")
+
+    # Конвертация с максимально мягкими настройками для iOS Safari
+    def try_convert(output_path, extra_args):
+        try:
+            cmd = [
+                "ffmpeg", "-y",
+                "-err_detect", "ignore_err",     # Игнорировать ошибки в потоке
+                "-fflags", "+discardcorrupt",     # Отбрасывать повреждённые фреймы
+                "-i", tmp_path,
+            ] + extra_args + [output_path]
+            r = subprocess.run(cmd, capture_output=True, timeout=120)
+            if r.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                logger.info(f"Converted OK: {output_path}, size={os.path.getsize(output_path)}")
+                return True
+            logger.warning(f"Convert failed: {output_path}, rc={r.returncode}, stderr={r.stderr[-300:] if r.stderr else 'none'}")
+        except Exception as e:
+            logger.warning(f"Convert exception: {e}")
+        return False
+
+    # Попытка 1: WAV PCM (самый совместимый для STT)
+    if try_convert(converted_wav, ["-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1"]):
+        send_path = converted_wav
+        send_filename = "audio.wav"
+    # Попытка 2: mp3
+    elif try_convert(converted_mp3, ["-ar", "16000", "-ac", "1", "-q:a", "4"]):
+        send_path = converted_mp3
+        send_filename = "audio.mp3"
+    else:
+        logger.warning("All conversions failed, sending original file")
+
+    # Отправка в Nexara с ретраями
+    async def send_to_nexara(path, fname):
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            with open(path, "rb") as f:
+                return await client.post(
+                    NEXARA_API_URL,
+                    headers={"Authorization": f"Bearer {NEXARA_API_KEY}"},
+                    files={"file": (fname, f)},
+                    data={"task": "transcribe", "language": "ru", "model": "whisper-1", "response_format": "json"},
+                )
+
+    try:
+        response = await send_to_nexara(send_path, send_filename)
+
+        # Если не получилось — пробуем другие форматы
+        if response.status_code != 200:
+            logger.warning(f"Nexara failed with {send_filename}: {response.status_code}")
+            candidates = []
+            if send_path != converted_wav and os.path.exists(converted_wav):
+                candidates.append((converted_wav, "audio.wav"))
+            if send_path != converted_mp3 and os.path.exists(converted_mp3):
+                candidates.append((converted_mp3, "audio.mp3"))
+            if send_path != tmp_path:
+                candidates.append((tmp_path, filename))
+
+            for cpath, cname in candidates:
+                logger.info(f"Retrying with {cname}")
+                response = await send_to_nexara(cpath, cname)
+                if response.status_code == 200:
+                    break
+
+        if response.status_code != 200:
+            detail = "Файл не удалось распознать"
+            try:
+                detail = response.json().get("detail", detail)
+            except:
+                pass
+            raise HTTPException(status_code=503, detail=f"Ошибка распознавания: {detail}. Попробуйте записать через стандартный диктофон и загрузить файл.")
+        return response.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Ошибка распознавания: {str(e)}")
+    finally:
+        for p in [tmp_path, converted_wav, converted_mp3]:
+            try: os.unlink(p)
+            except: pass
+
+
+@app.post("/structure")
+async def structure_text(text: str = Form(...), specialty: str = Form("therapist"), template_id: str = Form(""), authorization: str = Header(None)):
+    # Если указан template_id — используем сохранённый шаблон
+    if template_id:
+        conn = get_db()
+        row = conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Шаблон не найден")
+        tpl = dict(row)
+        sections_schema = json.loads(tpl["sections_schema"])
+
+        # Извлекаем ВСЕ строки шаблона с ключами — сохраняем оригинальную строку
+        field_keys = []  # (section_title, key_name, full_original_line)
+        for sec in sections_schema:
+            tpl_text = sec.get("template_text", "")
+            if not tpl_text:
+                continue
+            for line in tpl_text.split("\n"):
+                stripped = line.strip()
+                if not stripped or len(stripped) < 5:
+                    continue
+                if ":" in stripped:
+                    key = stripped.split(":")[0].strip()
+                    if key and 3 < len(key) < 80:
+                        field_keys.append((sec["title"], key, stripped))
+
+        # Компактный список для AI — только ключи без дублей
+        seen_keys = set()
+        unique_fields = []
+        for sec_title, key, _ in field_keys:
+            fk = f"{sec_title} > {key}"
+            if fk not in seen_keys:
+                seen_keys.add(fk)
+                unique_fields.append(fk)
+
+        fields_list = "\n".join(f"- {f}" for f in unique_fields[:60])
+
+        prompt = f"""Из расшифровки речи врача извлеки значения для полей медицинского документа.
+
+Поля документа:
+{fields_list}
+
+Ответ — СТРОГО JSON (без markdown, без пояснений):
+{{"patient_name":"ФИО пациента","diagnosis_code":"МКБ-10","conclusion":"Развёрнутое заключение по результатам","values":{{"ТОЧНОЕ_ИМЯ_ПОЛЯ":"значение после двоеточия"}}}}
+
+ВАЖНО:
+- Ключи в values должны ТОЧНО совпадать с именами полей из списка выше
+- Значение = то, что идёт ПОСЛЕ двоеточия в этом поле
+- Если данных нет — НЕ включай поле (оставится шаблонное)
+- Заключение — развёрнутое, по всем органам, как пишет врач УЗД"""
+
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text[:4000]},
+        ]
+        raw = await gigachat_complete(messages, max_tokens=2048)
+
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r'^```(?:json)?\s*', '', raw)
+            raw = re.sub(r'\s*```$', '', raw)
+
+        try:
+            ai_data = json.loads(raw)
+        except:
+            match = re.search(r'\{[\s\S]*\}', raw)
+            if match:
+                ai_data = json.loads(match.group())
+            else:
+                raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")
+
+        values = ai_data.get("values", {})
+        conclusion = ai_data.get("conclusion", "")
+        patient_name_ai = ai_data.get("patient_name", "")
+        diagnosis_code_ai = ai_data.get("diagnosis_code", "")
+
+        # Строим маппинг: ТОЛЬКО section-scoped ключи (без коротких — они вызывают перемешивание)
+        norm_values = {}
+        for k, v in values.items():
+            k_lower = k.lower().strip()
+            norm_values[k_lower] = v
+            # Нормализуем разделитель
+            if " > " in k:
+                norm_values[k.replace(" > ", ".").lower().strip()] = v
+
+        # Заполняем шаблон — построчно заменяем значения после двоеточий
+        result_sections = []
+        for sec in sections_schema:
+            tpl_text = sec.get("template_text", "")
+            if not tpl_text:
+                result_sections.append({"title": sec["title"], "content": ""})
+                continue
+
+            filled_lines = []
+            for line in tpl_text.split("\n"):
+                stripped = line.strip()
+                if not stripped:
+                    filled_lines.append("")
+                    continue
+
+                if ":" in stripped:
+                    key_part = stripped.split(":")[0].strip()
+                    
+                    # Ищем ТОЛЬКО по полному ключу с секцией — не по короткому
+                    matched_value = None
+                    search_keys = [
+                        f"{sec['title']} > {key_part}".lower(),
+                        f"{sec['title']}.{key_part}".lower(),
+                        f"{sec['title'].lower()} > {key_part.lower()}",
+                    ]
+                    for sk in search_keys:
+                        if sk in norm_values:
+                            matched_value = norm_values[sk]
+                            break
+
+                    if matched_value is not None:
+                        leading_spaces = len(line) - len(line.lstrip())
+                        prefix = line[:leading_spaces] + key_part + ": "
+                        filled_lines.append(prefix + str(matched_value))
+                    else:
+                        filled_lines.append(line)  # Оставляем оригинал
+                else:
+                    filled_lines.append(line)
+
+            content = "\n".join(filled_lines)
+            result_sections.append({"title": sec["title"], "content": content})
+
+        # Добавляем заключение
+        if conclusion:
+            # Ищем секцию ЗАКЛЮЧЕНИЕ или добавляем к последней
+            found = False
+            for sec in result_sections:
+                if "заключение" in sec["title"].lower():
+                    sec["content"] = conclusion
+                    found = True
+                    break
+            if not found:
+                # Добавляем заключение к контенту последней непустой секции
+                for sec in reversed(result_sections):
+                    if sec["content"]:
+                        sec["content"] += f"\n\nЗАКЛЮЧЕНИЕ: {conclusion}"
+                        break
+
+        return {
+            "patient_name": patient_name_ai,
+            "date": "",
+            "specialty": tpl.get("specialty", ""),
+            "diagnosis_code": diagnosis_code_ai,
+            "sections": result_sections,
+            "summary": conclusion,
+            "_template_id": template_id,
+        }
+
+    else:
+        # Обычный режим — встроенный промпт
+        prompt = PROMPTS.get(specialty)
+        if not prompt:
+            raise HTTPException(status_code=400, detail=f"Неизвестная специальность: {specialty}")
+
+        # Если это дневник — подгружаем примеры врача для обучения стилю
+        if "diary" in specialty and authorization:
+            try:
+                user = get_user_by_token(authorization.replace("Bearer ", ""))
+                if user:
+                    conn = get_db()
+                    samples = conn.execute(
+                        "SELECT sample_text FROM diary_samples WHERE user_id = ? AND specialty_key = ? ORDER BY created_at DESC LIMIT 5",
+                        (user["id"], specialty),
+                    ).fetchall()
+                    conn.close()
+                    if samples:
+                        examples = "\n\n---\n\n".join([s["sample_text"][:1500] for s in samples])
+                        prompt += f"""
+
+ВАЖНО: Ниже приведены ПРИМЕРЫ дневниковых записей этого врача. Пиши в ТОЧНО ТАКОМ ЖЕ стиле — копируй манеру, длину предложений, используемые обороты, степень детализации. Адаптируй только содержание под конкретного пациента.
+
+ПРИМЕРЫ СТИЛЯ ВРАЧА:
+{examples}
+
+Пиши новые записи ТОЧНО в этом стиле."""
+            except Exception:
+                pass  # Если что-то пошло не так — продолжаем без примеров
+
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ]
+        raw = await gigachat_complete(messages)
+
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+
+    # Strip === markers from AI content
+    raw = re.sub(r'===\s*[^=\n]+\s*===\s*\\n', '', raw)
+    raw = re.sub(r'===\s*[^=\n]+\s*===\s*\n', '', raw)
+
+    try:
+        result = json.loads(raw)
+        # Clean sections content
+        if "sections" in result:
+            for sec in result["sections"]:
+                if "content" in sec:
+                    sec["content"] = re.sub(r'===\s*[^=\n]+\s*===\s*\n?', '', sec["content"]).strip()
+        return result
+    except json.JSONDecodeError:
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            try:
+                result = json.loads(match.group())
+                if "sections" in result:
+                    for sec in result["sections"]:
+                        if "content" in sec:
+                            sec["content"] = re.sub(r'===\s*[^=\n]+\s*===\s*\n?', '', sec["content"]).strip()
+                return result
+            except:
+                pass
+        raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")# ─── Template management ───
+
+def extract_sections_from_docx(content: bytes) -> list:
+    """Извлекает структуру разделов из .docx шаблона с текстом полей."""
+    from docx import Document as DocxDocument
+    import io
+    doc = DocxDocument(io.BytesIO(content))
+
+    sections = []
+    current_title = None
+    current_lines = []
+
+    # Разделы-бойлерплейт которые не нужно отправлять в LLM полностью
+    SKIP_SECTIONS = {"Шкала оценки падений Hendrich II", "Карта по обучению пациента",
+                     "Оценка потребности и барьеров к обучению", "План обучения"}
+
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if not text:
+            continue
+
+        is_heading = False
+        if p.runs and all(r.bold for r in p.runs if r.text.strip()):
+            if len(text) < 100:
+                is_heading = True
+        elif text.endswith(":") and len(text) < 60 and not text.startswith("[") and not text.startswith("("):
+            is_heading = True
+        elif text.isupper() and len(text) < 60:
+            is_heading = True
+
+        if is_heading:
+            if current_title:
+                full_text = "\n".join(current_lines)
+                # Сжимаем: оставляем только первые 500 символов шаблона для каждого раздела
+                if len(full_text) > 800:
+                    full_text = full_text[:800] + "..."
+                sections.append({"title": current_title, "template_text": full_text})
+            current_title = text.rstrip(":")
+            current_lines = []
+        elif current_title:
+            # Пропускаем бойлерплейт (подписи, шкалы)
+            if current_title in SKIP_SECTIONS:
+                continue
+            current_lines.append(text)
+
+    if current_title:
+        full_text = "\n".join(current_lines)
+        if len(full_text) > 800:
+            full_text = full_text[:800] + "..."
+        sections.append({"title": current_title, "template_text": full_text})
+
+    return sections
+
+
+# Run auto-import now that extract_sections_from_docx is defined
+import_builtin_templates()
+
+
+@app.post("/templates")
+async def upload_template(
+    template: UploadFile = File(...),
+    name: str = Form(""),
+    specialty: str = Form(""),
+    authorization: str = Header(None),
+):
+    """Загрузить шаблон .docx — извлечь структуру и сохранить."""
+    user_id = ""
+    try:
+        user = require_auth(authorization)
+        user_id = user["id"]
+    except:
+        pass
+    filename = template.filename or "template.docx"
+    content = await template.read()
+
+    if not filename.lower().endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Поддерживаются только .docx файлы")
+
+    try:
+        sections = extract_sections_from_docx(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Ошибка чтения шаблона: {str(e)}")
+
+    if not sections:
+        raise HTTPException(status_code=400, detail="Не удалось извлечь разделы из шаблона")
+
+    tpl_id = str(uuid.uuid4())[:8]
+    tpl_name = name or filename.replace(".docx", "")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO templates (id, user_id, name, specialty, sections_schema, docx_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (tpl_id, user_id, tpl_name, specialty, json.dumps(sections, ensure_ascii=False), content, now),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": tpl_id,
+        "name": tpl_name,
+        "specialty": specialty,
+        "sections_count": len(sections),
+        "sections": sections,
+        "created_at": now,
+    }
+
+
+@app.get("/templates")
+async def list_templates(authorization: str = Header(None)):
+    """Список сохранённых шаблонов."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, name, specialty, sections_schema, created_at FROM templates ORDER BY created_at DESC",
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["sections_count"] = len(json.loads(d["sections_schema"]))
+        del d["sections_schema"]
+        result.append(d)
+    return result
+
+
+@app.get("/templates/{tpl_id}")
+async def get_template(tpl_id: str, authorization: str = Header(None)):
+    """Получить шаблон с разделами."""
+    conn = get_db()
+    row = conn.execute("SELECT id, user_id, name, specialty, sections_schema, created_at FROM templates WHERE id = ?", (tpl_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    d = dict(row)
+    d["sections"] = json.loads(d["sections_schema"])
+    d["sections_count"] = len(d["sections"])
+    del d["sections_schema"]
+    return d
+
+
+@app.delete("/templates/{tpl_id}")
+async def delete_template(tpl_id: str, authorization: str = Header(None)):
+    """Удалить шаблон."""
+    conn = get_db()
+    conn.execute("DELETE FROM templates WHERE id = ?", (tpl_id,))
+    conn.commit()
+    conn.close()
+    return {"deleted": tpl_id}
+
+
+@app.post("/structure-template")
+async def structure_with_template(text: str = Form(...), template: UploadFile = File(...)):
+    filename = template.filename or "template.txt"
+    content = await template.read()
+
+    if filename.endswith(".docx"):
+        try:
+            from docx import Document as DocxDocument
+            import io
+            doc = DocxDocument(io.BytesIO(content))
+            template_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Ошибка чтения .docx: {str(e)}")
+    else:
+        try:
+            template_text = content.decode("utf-8")
+        except:
+            template_text = content.decode("cp1251", errors="replace")
+
+    system_prompt = f"""Ты — ИИ-ассистент врача. Тебе дан ШАБЛОН медицинского документа и расшифровка речи врача (или интервью с пациентом). 
+
+Твоя задача:
+1. Извлечь ВСЕ разделы из шаблона — каждый заголовок, каждый подраздел
+2. Заполнить каждый раздел данными из расшифровки
+3. Для полей-шаблонов вида [текст в скобках] — подставить реальные данные из расшифровки
+4. Сохранить ТОЧНУЮ структуру шаблона, ничего не пропуская
+
+ШАБЛОН ДОКУМЕНТА:
+{template_text[:12000]}
+
+Формат ответа — СТРОГО JSON (без markdown, без backticks):
+{{
+  "patient_name": "ФИО пациента из расшифровки",
+  "date": "Дата если упомянута",
+  "specialty": "Специальность из шаблона",
+  "diagnosis_code": "Код МКБ-10 если определён",
+  "sections": [
+    {{"title": "Точное название раздела из шаблона", "content": "Полностью заполненный текст раздела по данным расшифровки. Для полей-шаблонов подставь реальные данные. Если данных нет — оставь шаблонные скобки [...]."}}
+  ],
+  "summary": "Краткое резюме"
+}}
+
+ВАЖНЫЕ ПРАВИЛА:
+- Создай section для КАЖДОГО раздела из шаблона (Жалобы, Анамнез жизни, Страховой анамнез, Сопутствующие заболевания, Эпиданамнез, Наркологический анамнез, Аллергологический анамнез, Анамнез заболевания, Психическое состояние, Физикальное исследование, Локальный статус, Диагноз, Обоснование, Назначения и т.д.)
+- Не объединяй и не пропускай разделы
+- Пиши содержимое разделов СВЯЗНЫМ ТЕКСТОМ, как в настоящей медицинской документации
+- Используй ТОЛЬКО данные из расшифровки, НЕ придумывай
+- Если данных для раздела нет в расшифровке — напиши "Данные не предоставлены"
+- Русский язык, профессиональная медицинская терминология"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": text[:8000]},
+    ]
+
+    raw = await gigachat_complete(messages, max_tokens=16384)
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+        raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")
+
+
+@app.post("/diagnose")
+async def diagnose(
+    sections: str = Form("[]"),
+    patient_name: str = Form(""),
+    transcript: str = Form(""),
+    authorization: str = Header(None),
+):
+    sections_data = json.loads(sections) if isinstance(sections, str) else sections
+    context = "\n".join(f"{s['title']}: {s['content']}" for s in sections_data if s.get('content'))
+
+    system_prompt = """Ты — ИИ-ассистент врача. На основе данных осмотра предложи предварительный диагноз.
+
+Формат ответа — СТРОГО JSON (без markdown):
+{
+  "icd_code": "Код МКБ-10",
+  "diagnosis": "Полное название диагноза",
+  "justification": "Обоснование диагноза",
+  "differential": "Дифференциальный диагноз",
+  "treatment": "Рекомендованное лечение",
+  "examinations": "Рекомендуемые обследования"
+}
+
+ВАЖНО: Это предварительный ИИ-диагноз, не окончательный. Русский язык."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Данные осмотра:\n{context}\n\nИсходная запись:\n{transcript[:2000]}"},
+    ]
+
+    raw = await gigachat_complete(messages, max_tokens=4096)
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+
+    try:
+        return json.loads(raw)
+    except:
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+        raise HTTPException(status_code=500, detail="Не удалось распарсить ответ ИИ")
+
+
+# ─── Legal Analysis (Live Assist) ───
+
+LEGAL_RULES_PROMPT = """Ты — юридический ИИ-ассистент врача. Анализируй фрагмент разговора врача с пациентом в реальном времени.
+
+Ищи ТОЛЬКО конкретные правовые триггеры. НЕ выдумывай алерты если их нет. Если всё в порядке — верни пустой массив.
+
+ТРИГГЕРЫ (российское медицинское право):
+
+ОТКАЗ ОТ ЛЕЧЕНИЯ/ГОСПИТАЛИЗАЦИИ:
+- Пациент говорит "не буду госпитализироваться", "отказываюсь от лечения", "не хочу ложиться", "выпишите меня"
+→ level: "warning", law: "ст. 20 ФЗ-323", action: "Оформите письменный информированный отказ от госпитализации/лечения. Разъясните возможные последствия."
+
+ВРАЧЕБНАЯ ТАЙНА:
+- Пациент спрашивает о диагнозе другого человека, родственника, просит рассказать о чужом лечении
+→ level: "danger", law: "ст. 13 ФЗ-323", action: "Врачебная тайна. Вы не вправе разглашать сведения без письменного согласия пациента."
+
+СУИЦИДАЛЬНЫЕ НАМЕРЕНИЯ:
+- Упоминание суицида, желания умереть, самоповреждения, "не хочу жить", "лучше бы умер"
+→ level: "danger", law: "ст. 29 Закона о психиатрической помощи", action: "Показания к недобровольной госпитализации. Немедленно оценить суицидальный риск."
+
+НЕСОВЕРШЕННОЛЕТНИЙ БЕЗ ПРЕДСТАВИТЕЛЯ:
+- Пациенту меньше 18 лет и нет родителя/опекуна, или упоминается что пришёл один
+→ level: "warning", law: "ст. 20 ФЗ-323, ст. 54 СК РФ", action: "Для лечения несовершеннолетнего требуется согласие законного представителя (кроме экстренной помощи)."
+
+НАСИЛИЕ / ПОБОИ:
+- Пациент описывает побои, насилие, что его бьют, следы побоев
+→ level: "danger", law: "ст. 124.1 УК РФ, ст. 56 ФЗ-323", action: "При выявлении признаков побоев — зафиксировать, сообщить в правоохранительные органы."
+
+ОТКАЗ ОТ ИНФОРМИРОВАННОГО СОГЛАСИЯ:
+- Пациент не хочет подписывать согласие, отказывается от бумаг
+→ level: "warning", law: "ст. 20 ФЗ-323", action: "Информированное добровольное согласие обязательно. Без подписи нельзя начинать лечение (кроме экстренных случаев)."
+
+НЕДОБРОВОЛЬНАЯ ГОСПИТАЛИЗАЦИЯ:
+- Пациент представляет опасность для себя или окружающих, беспомощен, состояние ухудшится без лечения
+→ level: "info", law: "ст. 29 Закона о психиатрической помощи", action: "Возможны основания для недобровольной госпитализации. Требуется заключение комиссии в течение 48 часов."
+
+РАЗГЛАШЕНИЕ ДИАГНОЗА ПАЦИЕНТУ:
+- Пациент просит не сообщать диагноз, или врач собирается сообщить неблагоприятный прогноз
+→ level: "info", law: "ст. 22 ФЗ-323", action: "Пациент имеет право на полную информацию о состоянии здоровья. Информация подаётся в деликатной форме."
+
+ЖАЛОБА НА ДРУГОГО ВРАЧА:
+- Пациент жалуется на действия другого врача, некачественное лечение
+→ level: "info", law: "ст. 87-90 ФЗ-323", action: "Зафиксируйте жалобу. Пациент имеет право обратиться к заведующему отделением, в страховую компанию или Росздравнадзор."
+
+РЕЦЕПТ НА НАРКОТИЧЕСКИЕ СРЕДСТВА:
+- Пациент просит выписать сильнодействующие, наркотические препараты, упоминает конкретные препараты
+→ level: "warning", law: "ФЗ-3 о наркотических средствах, Приказ МЗ 1175н", action: "Назначение наркотических средств — строгий учёт. Требуется специальный рецептурный бланк."
+
+Ответ — СТРОГО JSON (без markdown):
+{"alerts": [{"level": "warning|danger|info", "title": "Короткий заголовок", "law": "Статья закона", "action": "Что делать врачу"}]}
+
+Если триггеров нет — {"alerts": []}
+НЕ придумывай алерты. Только при ЯВНОМ совпадении с триггером."""
+
+
+@app.post("/ask")
+async def ask_question(
+    question: str = Form(...),
+    authorization: str = Header(None),
+):
+    """Простой медицинский вопрос-ответ через ИИ."""
+    if not question.strip():
+        raise HTTPException(status_code=400, detail="Вопрос пустой")
+
+    system_prompt = """Ты — медицинский ИИ-ассистент для врача. Отвечай кратко, по существу и профессионально на русском языке.
+Если вопрос задан пациентом — отвечай так, чтобы помочь врачу быстро сориентироваться: возможные причины, что уточнить у пациента, какие обследования назначить.
+Всегда напоминай в конце, что окончательное решение принимает врач после очного осмотра."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": question[:2000]},
+    ]
+
+    try:
+        answer = await gigachat_complete(messages, max_tokens=2048)
+        return {"answer": answer.strip()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка ИИ: {str(e)}")
+
+
+@app.post("/analyze-legal")
+async def analyze_legal(text: str = Form(...)):
+    """Анализ фрагмента разговора на правовые триггеры."""
+    if not text.strip() or len(text.strip()) < 20:
+        return {"alerts": []}
+
+    messages = [
+        {"role": "system", "content": LEGAL_RULES_PROMPT},
+        {"role": "user", "content": f"Фрагмент разговора:\n{text[-2000:]}"},
+    ]
+
+    try:
+        raw = await gigachat_complete(messages, max_tokens=1024)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r'^```(?:json)?\s*', '', raw)
+            raw = re.sub(r'\s*```$', '', raw)
+        data = json.loads(raw)
+        return data
+    except:
+        return {"alerts": []}
+
+
+# ─── Records CRUD ───
+
+@app.post("/records")
+async def save_record(
+    patient_name: str = Form(""),
+    diagnosis_code: str = Form(""),
+    specialty: str = Form(""),
+    summary: str = Form(""),
+    sections: str = Form("[]"),
+    transcript: str = Form(""),
+    authorization: str = Header(None),
+):
+    user = require_auth(authorization)
+    record_id = str(uuid.uuid4())[:8]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO records (id, user_id, patient_name, diagnosis_code, specialty, summary, sections, transcript, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (record_id, user["id"], patient_name, diagnosis_code, specialty, summary, sections, transcript, now),
+    )
+    conn.commit()
+    conn.close()
+    return {"id": record_id, "created_at": now}
+
+
+@app.get("/records")
+async def list_records(authorization: str = Header(None)):
+    user = require_auth(authorization)
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, patient_name, diagnosis_code, specialty, summary, created_at FROM records WHERE user_id = ? ORDER BY created_at DESC",
+        (user["id"],),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/records/{record_id}")
+async def get_record(record_id: str, authorization: str = Header(None)):
+    user = require_auth(authorization)
+    conn = get_db()
+    row = conn.execute("SELECT * FROM records WHERE id = ? AND user_id = ?", (record_id, user["id"])).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+    record = dict(row)
+    record["sections"] = json.loads(record["sections"])
+    return record
+
+
+@app.delete("/records/{record_id}")
+async def delete_record(record_id: str, authorization: str = Header(None)):
+    user = require_auth(authorization)
+    conn = get_db()
+    conn.execute("DELETE FROM records WHERE id = ? AND user_id = ?", (record_id, user["id"]))
+    conn.commit()
+    conn.close()
+    return {"deleted": record_id}
+
+
+@app.patch("/records/{record_id}/diary")
+async def append_diary_entry(
+    record_id: str,
+    sections: str = Form("[]"),
+    transcript: str = Form(""),
+    summary: str = Form(""),
+    authorization: str = Header(None),
+):
+    user = require_auth(authorization)
+    conn = get_db()
+    row = conn.execute("SELECT * FROM records WHERE id = ? AND user_id = ?", (record_id, user["id"])).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+
+    existing = json.loads(row["sections"])
+    new_entries = json.loads(sections)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    divider = {"title": f"── Дневник {now} ──", "content": "", "isDivider": True}
+    combined = existing + [divider] + new_entries
+
+    new_summary = row["summary"]
+    if summary:
+        new_summary = (row["summary"] or "") + f" | {now}: {summary}"
+
+    conn.execute(
+        "UPDATE records SET sections = ?, summary = ? WHERE id = ? AND user_id = ?",
+        (json.dumps(combined, ensure_ascii=False), new_summary, record_id, user["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "entries_added": len(new_entries)}
+
+
+# ─── Diary Samples (обучение на примерах врача) ───
+
+@app.post("/diary-samples")
+async def save_diary_sample(
+    specialty_key: str = Form(""),
+    sample_text: str = Form(""),
+    authorization: str = Header(None),
+):
+    """Сохранить пример дневника для обучения нейросети стилю врача."""
+    user = require_auth(authorization)
+    if not sample_text.strip():
+        raise HTTPException(status_code=400, detail="Текст примера не может быть пустым")
+    sample_id = str(uuid.uuid4())[:8]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO diary_samples (id, user_id, specialty_key, sample_text, created_at) VALUES (?, ?, ?, ?, ?)",
+        (sample_id, user["id"], specialty_key or "psychiatrist_pnd_diary", sample_text.strip(), now),
+    )
+    conn.commit()
+    conn.close()
+    return {"id": sample_id, "created_at": now}
+
+
+@app.get("/diary-samples")
+async def list_diary_samples(
+    specialty_key: str = "",
+    authorization: str = Header(None),
+):
+    """Список примеров дневников врача."""
+    user = require_auth(authorization)
+    conn = get_db()
+    if specialty_key:
+        rows = conn.execute(
+            "SELECT id, specialty_key, sample_text, created_at FROM diary_samples WHERE user_id = ? AND specialty_key = ? ORDER BY created_at DESC",
+            (user["id"], specialty_key),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, specialty_key, sample_text, created_at FROM diary_samples WHERE user_id = ? ORDER BY created_at DESC",
+            (user["id"],),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.delete("/diary-samples/{sample_id}")
+async def delete_diary_sample(sample_id: str, authorization: str = Header(None)):
+    """Удалить пример дневника."""
+    user = require_auth(authorization)
+    conn = get_db()
+    conn.execute("DELETE FROM diary_samples WHERE id = ? AND user_id = ?", (sample_id, user["id"]))
+    conn.commit()
+    conn.close()
+    return {"deleted": sample_id}
+
+
+# ─── Word Export ───
+
+from fastapi.responses import StreamingResponse
+import io
+
+@app.post("/export-word")
+async def export_word(
+    patient_name: str = Form(""),
+    diagnosis_code: str = Form(""),
+    specialty: str = Form(""),
+    summary: str = Form(""),
+    sections: str = Form("[]"),
+    template_id: str = Form(""),
+):
+    from docx import Document as DocxDocument
+    from docx.shared import Pt, Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    sections_data = json.loads(sections) if isinstance(sections, str) else sections
+
+    # ─── Template-based export: modify original docx directly ───
+    if template_id:
+        conn = get_db()
+        row = conn.execute("SELECT docx_data, sections_schema FROM templates WHERE id = ?", (template_id,)).fetchone()
+        conn.close()
+
+        if row and row["docx_data"]:
+            doc = DocxDocument(io.BytesIO(row["docx_data"]))
+
+            # Build SECTION-SCOPED values map: {"печень": {"расположение": "...", "размеры": "..."}, ...}
+            scoped_values = {}
+            conclusion_text = ""
+            for sec in sections_data:
+                sec_title = sec.get("title", "").strip().lower()
+                content = sec.get("content", "")
+                if not content:
+                    continue
+
+                scoped_values[sec_title] = {}
+                for line in content.split("\n"):
+                    line = line.strip()
+                    if not line or len(line) < 5:
+                        continue
+                    if ":" in line:
+                        key = line.split(":")[0].strip().lower()
+                        val = ":".join(line.split(":")[1:]).strip()
+                        if key and val:
+                            scoped_values[sec_title][key] = val
+
+                # Extract conclusion
+                if "заключение" in content.lower():
+                    for line in content.split("\n"):
+                        if "ЗАКЛЮЧЕНИЕ" in line and ":" in line:
+                            conclusion_text = line.split(":", 1)[1].strip()
+
+            # Detect section headers in docx (bold short paragraphs like "ПЕЧЕНЬ:", "ЖЕЛЧНЫЙ ПУЗЫРЬ:")
+            section_headers = set()
+            for p in doc.paragraphs:
+                text = p.text.strip()
+                if text and len(text) < 60 and p.runs and all(r.bold for r in p.runs if r.text.strip()):
+                    section_headers.add(text.rstrip(":").strip().lower())
+
+            # Walk through paragraphs, tracking current section
+            current_section = ""
+            for p in doc.paragraphs:
+                text = p.text.strip()
+                if not text:
+                    continue
+
+                # Detect section change
+                text_norm = text.rstrip(":").strip().lower()
+                if text_norm in section_headers:
+                    current_section = text_norm
+                    continue
+
+                # Skip if no current section or no colon
+                if ":" not in text:
+                    continue
+
+                key_part = text.split(":")[0].strip().lower()
+
+                # Look up value in current section first, then global
+                matched_val = None
+                if current_section and current_section in scoped_values:
+                    matched_val = scoped_values[current_section].get(key_part)
+
+                # Fallback: try other sections (but only if key is unique enough)
+                if not matched_val and len(key_part) > 15:
+                    for sec_vals in scoped_values.values():
+                        if key_part in sec_vals:
+                            matched_val = sec_vals[key_part]
+                            break
+
+                if matched_val:
+                    # Replace value after colon in runs, preserving formatting
+                    colon_found = False
+                    for run in p.runs:
+                        if colon_found:
+                            run.text = ""
+                        elif ":" in run.text:
+                            colon_pos = run.text.index(":")
+                            run.text = run.text[:colon_pos + 1] + " " + matched_val
+                            colon_found = True
+
+                # Replace ЗАКЛЮЧЕНИЕ
+                if "ЗАКЛЮЧЕНИЕ" in text and conclusion_text:
+                    for run in p.runs:
+                        if "ЗАКЛЮЧЕНИЕ" in run.text and ":" in run.text:
+                            colon_pos = run.text.index(":")
+                            run.text = run.text[:colon_pos + 1] + " " + conclusion_text
+                            break
+
+                # Replace template variables
+                if patient_name:
+                    for run in p.runs:
+                        if "{{PatFIO}}" in run.text:
+                            run.text = run.text.replace("{{PatFIO}}", patient_name)
+
+            # Replace in tables too
+            for table in doc.tables:
+                for tbl_row in table.rows:
+                    for cell in tbl_row.cells:
+                        for p in cell.paragraphs:
+                            for run in p.runs:
+                                if patient_name and "{{PatFIO}}" in run.text:
+                                    run.text = run.text.replace("{{PatFIO}}", patient_name)
+
+            buffer = io.BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
+
+            filename = f"Doc_{patient_name.split()[0] if patient_name else 'patient'}.docx"
+            from urllib.parse import quote
+            return StreamingResponse(
+                buffer,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+            )
+
+    # ─── Default export: generate new docx ───
+    doc = DocxDocument()
+    for section in doc.sections:
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(1.5)
+
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Times New Roman'
+    font.size = Pt(12)
+    style.paragraph_format.space_after = Pt(2)
+    style.paragraph_format.line_spacing = 1.15
+
+    is_diary = "дневник" in specialty.lower()
+    is_uzi = "узи" in specialty.lower()
+    is_psychiatry = "психиатр" in specialty.lower()
+
+    if not is_diary:
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title_text = "Протокол УЗ-исследования" if is_uzi else ("Первичный осмотр" if is_psychiatry else "Медицинская документация")
+        run = title.add_run(title_text)
+        run.bold = True
+        run.font.size = Pt(14)
+        run.font.name = 'Times New Roman'
+
+    if patient_name:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(patient_name)
+        run.bold = True
+        run.font.size = Pt(13)
+        run.font.name = 'Times New Roman'
+
+    if specialty:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(specialty)
+        run.font.size = Pt(11)
+        run.font.name = 'Times New Roman'
+        run.italic = True
+
+    if is_psychiatry and not is_diary:
+        preamble = doc.add_paragraph()
+        preamble.paragraph_format.space_before = Pt(8)
+        run = preamble.add_run(
+            'Представился(лась) психиатром, разъяснены права согласно закону РФ '
+            '"О психиатрической помощи и гарантиях прав граждан при ее оказании". '
+            'На беседу согласен(а). Подтвердил(а) согласие на осмотр и/или лечение '
+            'в письменной форме.'
+        )
+        run.font.name = 'Times New Roman'
+        run.font.size = Pt(12)
+
+    for sec in sections_data:
+        title_text = sec.get("title", "")
+        content_text = sec.get("content", "")
+        if not content_text or content_text == "Данные не предоставлены":
+            continue
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(6)
+        run_title = p.add_run(f"{title_text}: ")
+        run_title.bold = True
+        run_title.font.name = 'Times New Roman'
+        run_title.font.size = Pt(12)
+        run_content = p.add_run(content_text)
+        run_content.font.name = 'Times New Roman'
+        run_content.font.size = Pt(12)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    filename = f"Doc_{patient_name.split()[0] if patient_name else 'patient'}.docx"
+    from urllib.parse import quote
+    encoded_filename = quote(filename)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+    )
+
+
+# ─── Serve React frontend ───
+
+@app.on_event("startup")
+async def mount_static():
+    if STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR / "static")), name="static-assets")
+
+@app.get("/{full_path:path}")
+async def serve_react(full_path: str):
+    if STATIC_DIR.exists():
+        file_path = STATIC_DIR / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        index = STATIC_DIR / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+    return {"detail": "Frontend not built. Run: cd frontend && npm run build"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
