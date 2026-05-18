@@ -29,6 +29,111 @@ const SPECIALTIES = [
 
 const findSpec = (key) => SPECIALTIES.find(s => s.key === key) || { key, label: key };
 
+// ─── Simple markdown renderer for AI answers ───
+// Supports **bold**, * italic *, bullet lists (- or •), numbered lists, paragraphs
+const MarkdownText = ({ text }) => {
+  if (!text) return null;
+
+  // Render inline formatting: **bold** and *italic*
+  const renderInline = (s) => {
+    const parts = [];
+    let i = 0;
+    let key = 0;
+    while (i < s.length) {
+      // **bold**
+      if (s[i] === "*" && s[i+1] === "*") {
+        const end = s.indexOf("**", i + 2);
+        if (end !== -1) {
+          parts.push(<strong key={key++}>{s.slice(i + 2, end)}</strong>);
+          i = end + 2;
+          continue;
+        }
+      }
+      // *italic* (single star, not followed by another star)
+      if (s[i] === "*" && s[i+1] !== "*" && i > 0 && s[i-1] !== "*") {
+        const end = s.indexOf("*", i + 1);
+        if (end !== -1 && s[end+1] !== "*") {
+          parts.push(<em key={key++}>{s.slice(i + 1, end)}</em>);
+          i = end + 1;
+          continue;
+        }
+      }
+      // Plain text — collect until next marker
+      let j = i;
+      while (j < s.length && s[j] !== "*") j++;
+      parts.push(s.slice(i, j));
+      i = j;
+    }
+    return parts;
+  };
+
+  // Split into blocks: group consecutive list items, separate paragraphs by blank lines
+  const lines = text.split("\n");
+  const blocks = [];
+  let currentList = null;
+  let currentPara = [];
+
+  const flushPara = () => {
+    if (currentPara.length > 0) {
+      blocks.push({ type: "p", lines: currentPara });
+      currentPara = [];
+    }
+  };
+  const flushList = () => {
+    if (currentList) {
+      blocks.push(currentList);
+      currentList = null;
+    }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      flushPara();
+      flushList();
+      continue;
+    }
+    // Bullet list item
+    const bulletMatch = line.match(/^[-•*]\s+(.+)/);
+    if (bulletMatch) {
+      flushPara();
+      if (!currentList || currentList.type !== "ul") currentList = { type: "ul", items: [] };
+      currentList.items.push(bulletMatch[1]);
+      continue;
+    }
+    // Numbered list item
+    const numMatch = line.match(/^(\d+)[.)]\s+(.+)/);
+    if (numMatch) {
+      flushPara();
+      if (!currentList || currentList.type !== "ol") currentList = { type: "ol", items: [] };
+      currentList.items.push(numMatch[2]);
+      continue;
+    }
+    // Regular paragraph line
+    flushList();
+    currentPara.push(line);
+  }
+  flushPara();
+  flushList();
+
+  return (
+    <>
+      {blocks.map((block, idx) => {
+        if (block.type === "p") {
+          return <p key={idx} className="md-p">{renderInline(block.lines.join(" "))}</p>;
+        }
+        if (block.type === "ul") {
+          return (<ul key={idx} className="md-ul">{block.items.map((it, i) => (<li key={i}>{renderInline(it)}</li>))}</ul>);
+        }
+        if (block.type === "ol") {
+          return (<ol key={idx} className="md-ol">{block.items.map((it, i) => (<li key={i}>{renderInline(it)}</li>))}</ol>);
+        }
+        return null;
+      })}
+    </>
+  );
+};
+
 const UZI_TYPES = [
   { key: "uzi_abdominal", label: "Органы бр. полости" },
   { key: "uzi_kidneys", label: "Почки" },
@@ -1032,7 +1137,7 @@ export default function App() {
                 {askAnswer && (
                   <div className="ask-answer">
                     <div className="ask-answer-label">Ответ ИИ</div>
-                    <div className="ask-answer-text">{askAnswer}</div>
+                    <div className="ask-answer-text"><MarkdownText text={askAnswer} /></div>
                   </div>
                 )}
               </div>
