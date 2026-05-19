@@ -1312,11 +1312,11 @@ export default function App() {
                     {(transcribing || uploading) ? (
                       <><span className="hint-spinner" />{getHint()}</>
                     ) : rec ? (
-                      <><span className="hint-dot" /><span className="record-btn-icon">⏹</span><span>{getHint()}</span></>
+                      <><span className="hint-dot" /><span>{getHint()}</span></>
                     ) : source === "mic" ? (
-                      <><span className="record-btn-icon">🎤</span><span>Нажмите, чтобы начать запись</span></>
+                      <span>Нажмите, чтобы начать запись</span>
                     ) : (
-                      <><span className="record-btn-icon">📁</span><span>Нажмите, чтобы выбрать аудиофайл</span></>
+                      <span>Нажмите, чтобы выбрать аудиофайл</span>
                     )}
                   </button>
                 </div>
