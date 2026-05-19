@@ -113,6 +113,24 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .hint-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--green-500); border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 6px; vertical-align: middle; }
 .hint-dot { display: inline-block; width: 8px; height: 8px; background: var(--red-500); border-radius: 50%; animation: blink 1s ease infinite; margin-right: 6px; vertical-align: middle; }
 
+/* ═══ RECORD BUTTON (Источник) ═══ */
+.record-btn { margin-top: 12px; width: 100%; padding: 16px 20px; background: white; border: 1.5px dashed var(--gray-300); border-radius: 12px; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--gray-700); font-family: var(--font); display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 0.15s; }
+.record-btn:hover:not(:disabled) { border-color: var(--green-500); background: var(--green-50); color: var(--green-700); border-style: solid; }
+.record-btn:disabled { cursor: not-allowed; opacity: 0.7; }
+.record-btn-icon { font-size: 18px; line-height: 1; }
+.record-btn.recording { background: linear-gradient(135deg, #fef2f2 0%, #fff1f1 100%); border: 1.5px solid var(--red-500); color: #991b1b; border-style: solid; }
+.record-btn.recording .record-btn-icon { font-size: 14px; }
+.record-btn.processing { background: var(--gray-50); border-style: solid; color: var(--gray-500); }
+.hint-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--gray-200); border-top-color: var(--green-500); border-radius: 50%; animation: spin 0.7s linear infinite; }
+
+/* ═══ TEMPLATE UPLOAD BUTTON ═══ */
+.tpl-upload-btn { padding: 8px 16px; background: white; border: 1px solid var(--gray-300); border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--gray-700); font-family: var(--font); transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px; }
+.tpl-upload-btn:hover:not(:disabled) { border-color: var(--green-500); background: var(--green-50); color: var(--green-700); }
+.tpl-upload-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.tpl-empty { font-size: 13px; color: var(--gray-500); padding: 8px 0; }
+.tpl-actions { display: flex; gap: 8px; }
+
+
 /* CTA */
 .cta { width: 100%; padding: 14px; background: var(--green-500); color: white; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: var(--font); display: flex; align-items: center; justify-content: center; gap: 8px; transition: background 0.2s; margin-bottom: 8px; }
 .cta:hover { background: var(--green-600); }

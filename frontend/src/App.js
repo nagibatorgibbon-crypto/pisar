@@ -1303,9 +1303,22 @@ export default function App() {
                     <div className={`tab ${source === "file" ? "active" : ""}`} onClick={() => setSource("file")}><UploadIcon /> Загрузить</div>
                   </div>
                   <input ref={fileRef} type="file" accept=".mp3,.wav,.m4a,.ogg,.flac,.webm,.aac,.wma,.mp4" style={{ display: "none" }} onChange={handleFile} />
-                  <div className={`source-hint ${rec ? "recording" : ""} ${(transcribing || uploading) ? "processing" : ""}`} onClick={handleHintClick}>
-                    {(transcribing || uploading) && <span className="hint-spinner" />}{rec && <span className="hint-dot" />}{getHint()}
-                  </div>
+                  <button
+                    type="button"
+                    className={`record-btn ${rec ? "recording" : ""} ${(transcribing || uploading) ? "processing" : ""}`}
+                    onClick={handleHintClick}
+                    disabled={transcribing || uploading}
+                  >
+                    {(transcribing || uploading) ? (
+                      <><span className="hint-spinner" />{getHint()}</>
+                    ) : rec ? (
+                      <><span className="hint-dot" /><span className="record-btn-icon">⏹</span><span>{getHint()}</span></>
+                    ) : source === "mic" ? (
+                      <><span className="record-btn-icon">🎤</span><span>Нажмите, чтобы начать запись</span></>
+                    ) : (
+                      <><span className="record-btn-icon">📁</span><span>Нажмите, чтобы выбрать аудиофайл</span></>
+                    )}
+                  </button>
                 </div>
               )}
 
