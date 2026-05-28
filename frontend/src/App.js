@@ -951,9 +951,9 @@ export default function App() {
       <div className="sections">{(data.sections || []).map((s, i) => (
         <div key={i}>
           <SectionCard title={s.title} content={s.content} idx={i} showHints={showHints} onContentChange={editable ? handleSectionEdit : null} />
-          {editable && snippets.length > 0 && (
+          {editable && (
             <div className="snip-chips">
-              {snippets.map(sn => (
+              {(snippets.length > 0 ? snippets : DEFAULT_SNIPPETS).map(sn => (
                 <button key={sn.id} className="snip-chip" title={sn.text} onClick={() => insertSnippet(i, sn.text)}>
                   {sn.label}
                 </button>
