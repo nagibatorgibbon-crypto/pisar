@@ -201,8 +201,8 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .sec-edit-cancel { padding: 9px 20px; background: white; color: var(--gray-600); border: 1px solid var(--gray-200); border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; font-family: var(--font); transition: all 0.15s; }
 .sec-edit-cancel:hover { background: var(--gray-50); border-color: var(--gray-300); }
 .sec-card.sec-missing .sec-text { color: var(--gray-400); font-style: italic; }
-.sections > div:has(.sec-missing) { background: #fff7f7; border-color: #fbd5d5; }
-.sections > div:has(.sec-missing):hover { border-color: #f8b4b4; box-shadow: 0 4px 16px rgba(239,68,68,0.06); }
+.sections > div.is-missing { background: #fff7f7; border-color: #fbd5d5; }
+.sections > div.is-missing:hover { border-color: #f8b4b4; box-shadow: 0 4px 16px rgba(239,68,68,0.06); }
 .missing-dot { display: inline-flex; width: 14px; height: 14px; background: var(--red-500); color: white; border-radius: 50%; font-size: 9px; font-weight: 700; align-items: center; justify-content: center; }
 .missing-hint { font-size: 12px; color: var(--red-500); margin-top: 4px; font-style: italic; }
 

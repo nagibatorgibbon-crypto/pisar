@@ -989,8 +989,10 @@ export default function App() {
         <div className="hints-banner">Часть разделов осталась незаполненной — нажмите «Заполнить» или вставьте заготовку, если нужно.</div>
       )}
       {data.summary && <div className="summary">{data.summary}</div>}
-      <div className="sections">{(data.sections || []).map((s, i) => (
-        <div key={i}>
+      <div className="sections">{(data.sections || []).map((s, i) => {
+        const secMissing = showHints && (!s.content || s.content === "Данные не предоставлены" || s.content.trim() === "");
+        return (
+        <div key={i} className={secMissing ? "section-block is-missing" : "section-block"}>
           <SectionCard title={s.title} content={s.content} idx={i} showHints={showHints} onContentChange={editable ? handleSectionEdit : null} />
           {editable && (
             <div className="snip-zone">
@@ -1017,7 +1019,8 @@ export default function App() {
             </div>
           )}
         </div>
-      ))}</div>
+        );
+      })}</div>
     </>
   );
 
