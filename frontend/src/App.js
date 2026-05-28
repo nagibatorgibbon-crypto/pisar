@@ -324,6 +324,7 @@ export default function App() {
   const [time, setTime] = useState(0);
   const [uploadName, setUploadName] = useState("");
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [diaryDateFrom, setDiaryDateFrom] = useState("");
   const [diaryDateTo, setDiaryDateTo] = useState("");
   const [records, setRecords] = useState([]);
@@ -669,6 +670,7 @@ export default function App() {
 
   const saveRecord = async () => {
     if (!result) return;
+    setSaving(true); setErr("");
     try {
       const fd = new FormData();
       fd.append("patient_name", result.patient_name || "");
@@ -678,8 +680,18 @@ export default function App() {
       fd.append("sections", JSON.stringify(result.sections || []));
       fd.append("transcript", text);
       const res = await fetch(`${API}/records`, { method: "POST", body: fd, headers: authHeaders });
-      if (res.ok) { setSaved(true); fetchRecords(); }
-    } catch (e) { setErr(`Ошибка сохранения: ${e.message}`); }
+      if (res.ok) {
+        setSaved(true);
+        fetchRecords();
+      } else {
+        const msg = await getErrMsg(res);
+        setErr(`Не удалось сохранить: ${msg}`);
+      }
+    } catch (e) {
+      setErr(`Ошибка сохранения: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveDiaryToPatient = async () => {
@@ -1454,7 +1466,12 @@ export default function App() {
                 ) : (
                   <>
                     <div className="disclaimer">Документ сформирован ИИ-ассистентом. Проверьте данные перед использованием.</div>
-                    {!saved ? <button onClick={saveRecord} className="save-btn">Сохранить в историю</button> : <div className="saved-msg">✓ Сохранено</div>}
+                    {!saved ? (
+                      <button onClick={saveRecord} className={`save-btn ${saving ? "off" : ""}`} disabled={saving}>
+                        {saving ? <><span className="spinner" />Сохраняю...</> : "Сохранить в историю"}
+                      </button>
+                    ) : <div className="saved-msg">✓ Сохранено</div>}
+                    {err && <div className="error" style={{marginTop:8}}>{err}</div>}
                   </>
                 )}
               </div>)}
@@ -1522,29 +1539,41 @@ export default function App() {
 
           {view === "template" && (
             <div className="template-view">
-              <button className="back-btn" onClick={() => setView("editor")}>← Назад</button>
-              <div className="card">
-                <div className="section-label">Расшифрованный текст</div>
-                <div className="template-text">{text || "Нет текста"}</div>
-              </div>
-              <div className="card">
-                <div className="section-label">Загрузите шаблон</div>
-                <p className="template-desc">Загрузите пример документа (.docx или .txt) — программа извлечёт структуру и заполнит её.</p>
-                <input type="file" ref={templateRef} accept=".docx,.txt,.doc" style={{display:"none"}} onChange={(e) => { const f = e.target.files?.[0]; if (f) setTemplateFile(f); }} />
-                <div className="template-upload" onClick={() => templateRef.current?.click()}>
-                  {templateFile ? (
-                    <div className="template-file-info">
-                      <span className="template-file-name">{templateFile.name}</span>
-                      <span className="template-file-change">Изменить</span>
-                    </div>
-                  ) : "Нажмите, чтобы загрузить шаблон"}
+              <div className="tpl-lib-header">
+                <div>
+                  <h2 className="tpl-lib-title">Мои шаблоны</h2>
+                  <p className="tpl-lib-sub">Загруженные шаблоны доступны при структурировании приёма в разделе «Документация».</p>
                 </div>
-                <button onClick={processWithTemplate} disabled={loading || !templateFile} className={`cta ${loading || !templateFile ? "off" : ""}`} style={{marginTop: 12}}>
-                  {loading ? <><span className="spinner" />Структурирую...</> : "Структурировать по шаблону"}
+                <input ref={tplFileRef} type="file" accept=".docx" style={{display:"none"}} onChange={e => { const f = e.target.files?.[0]; if (f) uploadTemplate(f); }} />
+                <button className="tpl-lib-add" onClick={() => tplFileRef.current?.click()} disabled={tplUploading}>
+                  {tplUploading ? <><span className="spinner" />Загружаю...</> : "+ Загрузить шаблон"}
                 </button>
               </div>
-              {err && <div className="error">{err}</div>}
-              {result && (<div className="result">{renderSections(result, true, true)}{!saved ? <button onClick={saveRecord} className="save-btn">Сохранить</button> : <div className="saved-msg">✓ Сохранено</div>}</div>)}
+
+              {err && <div className="error" style={{marginBottom: 12}}>{err}</div>}
+
+              {templates.length === 0 ? (
+                <div className="tpl-lib-empty">
+                  <div className="tpl-lib-empty-title">Пока нет шаблонов</div>
+                  <div className="tpl-lib-empty-text">Загрузите готовый документ (.docx) — программа запомнит его структуру и будет заполнять её при каждом приёме. Удобно, если в вашем учреждении свои формы.</div>
+                  <button className="tpl-lib-add" onClick={() => tplFileRef.current?.click()} disabled={tplUploading} style={{marginTop: 16}}>
+                    {tplUploading ? <><span className="spinner" />Загружаю...</> : "+ Загрузить первый шаблон"}
+                  </button>
+                </div>
+              ) : (
+                <div className="tpl-lib-list">
+                  {templates.map(t => (
+                    <div key={t.id} className="tpl-lib-item">
+                      <div className="tpl-lib-item-icon">DOCX</div>
+                      <div className="tpl-lib-item-info">
+                        <div className="tpl-lib-item-name">{t.name || t.filename || "Шаблон"}</div>
+                        <div className="tpl-lib-item-meta">{t.specialty_label || t.specialty || "Общий"}</div>
+                      </div>
+                      <button className="tpl-lib-item-delete" onClick={() => { if (window.confirm("Удалить шаблон?")) deleteTemplate(t.id); }} title="Удалить">✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
