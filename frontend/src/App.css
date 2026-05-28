@@ -159,12 +159,13 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .summary { font-size: 13px; color: var(--gray-600); padding: 10px 14px; background: var(--green-50); border-radius: var(--radius-sm); margin-bottom: 12px; line-height: 1.5; }
 
 /* Section cards → continuous document */
-.sections { background: white; border: 1px solid var(--gray-200); border-radius: 14px; padding: 24px 28px; }
-.sec-card { margin-bottom: 20px; animation: fadeUp 0.3s ease; }
-.sec-card:last-child { margin-bottom: 0; }
+.sections { background: white; border: 1px solid var(--gray-200); border-radius: 14px; padding: 8px 28px 24px; }
+.sections > div { padding-top: 20px; border-top: 1px solid var(--gray-100); }
+.sections > div:first-child { border-top: none; }
+.sec-card { animation: fadeUp 0.3s ease; }
 .sec-card.sec-missing { padding-left: 0; border-left: none; }
-.sec-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
-.sec-title { font-size: 11px; font-weight: 700; color: var(--green-500); text-transform: uppercase; letter-spacing: 0.3px; margin: 0; }
+.sec-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+.sec-title { font-size: 11px; font-weight: 700; color: var(--green-500); text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }
 .sec-card.sec-missing .sec-title { color: var(--red-500); display: flex; align-items: center; gap: 5px; }
 .sec-copy { background: none; border: none; font-size: 11px; color: var(--gray-400); cursor: pointer; font-family: var(--font); font-weight: 500; padding: 4px 8px; border-radius: 6px; transition: all 0.15s; }
 .sec-copy:hover { background: var(--gray-100); color: var(--gray-700); }
@@ -174,9 +175,11 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .sec-edit-btn:hover { background: var(--gray-100); color: var(--gray-700); }
 
 /* Snippet quick-phrase chips */
-.snip-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.snip-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
 .snip-chip { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 16px; padding: 5px 12px; font-size: 12px; font-weight: 500; color: var(--gray-600); cursor: pointer; font-family: var(--font); transition: all 0.15s; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .snip-chip:hover { background: var(--green-50); border-color: var(--green-500); color: var(--green-700); }
+.snip-chip::before { content: "+ "; color: var(--gray-400); font-weight: 600; }
+.snip-chip:hover::before { color: var(--green-500); }
 .sec-text { font-size: 14px; line-height: 1.7; color: var(--gray-800); margin: 0; }
 .sec-card.sec-missing .sec-text { color: var(--gray-400); font-style: italic; }
 .missing-dot { display: inline-flex; width: 14px; height: 14px; background: var(--red-500); color: white; border-radius: 50%; font-size: 9px; font-weight: 700; align-items: center; justify-content: center; }
