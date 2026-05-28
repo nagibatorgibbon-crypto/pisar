@@ -453,6 +453,16 @@ export default function App() {
   };
 
   const getErrMsg = async (res) => {
+    // If token is invalid/expired, force re-login
+    if (res.status === 401) {
+      try {
+        const d = await res.json();
+        if (d.detail && /токен|token|auth/i.test(d.detail)) {
+          setTimeout(() => { logout(); alert("Сессия истекла. Войдите снова."); }, 100);
+          return "сессия истекла — войдите снова";
+        }
+      } catch {}
+    }
     try {
       const d = await res.json();
       return d.detail || d.message || `Ошибка ${res.status}`;
