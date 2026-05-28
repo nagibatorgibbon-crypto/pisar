@@ -184,8 +184,8 @@ function SectionCard({ title, content, idx, showHints, onContentChange }) {
       <div className="sec-head">
         <h3 className="sec-title">{isMissing && <span className="missing-dot">!</span>}{title}</h3>
         <div className="sec-actions">
-          {!editing && <button onClick={() => { setEditVal(content); setEditing(true); }} className="sec-edit-btn">✏️</button>}
-          <button onClick={copy} className={`sec-copy ${copied ? "ok" : ""}`}>{copied ? "\u2713" : "Копировать"}</button>
+          {!editing && <button onClick={() => { setEditVal(content); setEditing(true); }} className="sec-edit-btn">Изменить</button>}
+          <button onClick={copy} className={`sec-copy ${copied ? "ok" : ""}`}>{copied ? "\u2713 Скопировано" : "Копировать"}</button>
         </div>
       </div>
       {editing ? (
@@ -350,7 +350,6 @@ export default function App() {
     const current = sec?.content || "";
     const joined = current && current !== "Данные не предоставлены" ? current + " " + snippetText : snippetText;
     handleSectionEdit(sectionIdx, joined);
-    setShowSnippets(false); setSnippetTarget(null);
   };
   const [templates, setTemplates] = useState([]);
   const [selectedTemplate, setSelectedTemplate] = useState("");
@@ -952,10 +951,14 @@ export default function App() {
       <div className="sections">{(data.sections || []).map((s, i) => (
         <div key={i}>
           <SectionCard title={s.title} content={s.content} idx={i} showHints={showHints} onContentChange={editable ? handleSectionEdit : null} />
-          {editable && (
-            <button className="snip-insert-btn" onClick={() => { setSnippetTarget(i); setShowSnippets(true); }}>
-              + Вставить сниппет
-            </button>
+          {editable && snippets.length > 0 && (
+            <div className="snip-chips">
+              {snippets.map(sn => (
+                <button key={sn.id} className="snip-chip" title={sn.text} onClick={() => insertSnippet(i, sn.text)}>
+                  {sn.label}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       ))}</div>
