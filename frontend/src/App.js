@@ -171,6 +171,42 @@ const DEFAULT_SNIPPETS = [
   { id: "s6", label: "Назначения продолжить", text: "Терапию продолжить в прежних дозировках. Коррекция лечения не проводилась." },
 ];
 
+function SnippetManagerItem({ snippet, onUpdate, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [label, setLabel] = useState(snippet.label);
+  const [text, setText] = useState(snippet.text);
+  const save = () => {
+    if (!label.trim() || !text.trim()) return;
+    onUpdate(snippet.id, label.trim(), text.trim());
+    setEditing(false);
+  };
+  const cancel = () => { setLabel(snippet.label); setText(snippet.text); setEditing(false); };
+  if (editing) {
+    return (
+      <div className="snip-manager-item editing">
+        <input className="auth-input" value={label} onChange={e => setLabel(e.target.value)} placeholder="Название" />
+        <textarea className="sec-edit-input" value={text} onChange={e => setText(e.target.value)} style={{minHeight:70, marginTop:6}} placeholder="Текст фразы" />
+        <div className="snip-edit-btns">
+          <button className="snip-save-btn" onClick={save}>Сохранить</button>
+          <button className="snip-cancel-btn" onClick={cancel}>Отмена</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="snip-manager-item">
+      <div className="snip-manager-info">
+        <div className="snip-label">{snippet.label}</div>
+        <div className="snip-preview">{snippet.text.length > 70 ? snippet.text.slice(0, 70) + "…" : snippet.text}</div>
+      </div>
+      <div className="snip-manager-actions">
+        <button className="snip-edit-icon" onClick={() => setEditing(true)} title="Редактировать">Изменить</button>
+        <button className="snip-delete" onClick={() => onDelete(snippet.id)} title="Удалить">✕</button>
+      </div>
+    </div>
+  );
+}
+
 function SectionCard({ title, content, idx, showHints, onContentChange }) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -327,6 +363,7 @@ export default function App() {
   const [newSnipLabel, setNewSnipLabel] = useState("");
   const [newSnipText, setNewSnipText] = useState("");
   const [showSnipManager, setShowSnipManager] = useState(false);
+  const [openSnipDropdown, setOpenSnipDropdown] = useState(null); // idx of section with open dropdown
 
   const saveSnippets = (arr) => { setSnippets(arr); localStorage.setItem("pisar_snippets", JSON.stringify(arr)); };
   const addSnippet = () => {
@@ -335,6 +372,11 @@ export default function App() {
     saveSnippets(arr); setNewSnipLabel(""); setNewSnipText("");
   };
   const deleteSnippet = (id) => saveSnippets(snippets.filter(s => s.id !== id));
+  const updateSnippet = (id, label, text) => {
+    saveSnippets(snippets.map(s => s.id === id ? { ...s, label, text } : s));
+  };
+  // If snippets empty, seed with defaults so user has something to edit
+  const ensureSnippets = () => { if (snippets.length === 0) saveSnippets([...DEFAULT_SNIPPETS]); };
 
   // Edit section content
   const handleSectionEdit = (idx, newContent) => {
@@ -952,12 +994,27 @@ export default function App() {
         <div key={i}>
           <SectionCard title={s.title} content={s.content} idx={i} showHints={showHints} onContentChange={editable ? handleSectionEdit : null} />
           {editable && (
-            <div className="snip-chips">
-              {(snippets.length > 0 ? snippets : DEFAULT_SNIPPETS).map(sn => (
-                <button key={sn.id} className="snip-chip" title={sn.text} onClick={() => insertSnippet(i, sn.text)}>
-                  {sn.label}
-                </button>
-              ))}
+            <div className="snip-zone">
+              <button
+                className={`snip-toggle ${openSnipDropdown === i ? "open" : ""}`}
+                onClick={() => setOpenSnipDropdown(openSnipDropdown === i ? null : i)}
+              >
+                Заготовки
+                <span className="snip-toggle-arrow">▾</span>
+              </button>
+              {openSnipDropdown === i && (
+                <div className="snip-dropdown">
+                  {(snippets.length > 0 ? snippets : DEFAULT_SNIPPETS).map(sn => (
+                    <button key={sn.id} className="snip-dropdown-item" onClick={() => { insertSnippet(i, sn.text); setOpenSnipDropdown(null); }}>
+                      <span className="snip-dropdown-label">{sn.label}</span>
+                      <span className="snip-dropdown-preview">{sn.text}</span>
+                    </button>
+                  ))}
+                  <button className="snip-dropdown-manage" onClick={() => { setShowSnipManager(true); setOpenSnipDropdown(null); }}>
+                    + Управлять заготовками
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1572,22 +1629,24 @@ export default function App() {
           {showSnipManager && (
             <div className="modal-overlay" onClick={() => setShowSnipManager(false)}>
               <div className="modal-card snip-manager" onClick={e => e.stopPropagation()}>
-                <div className="modal-title">Мои сниппеты</div>
+                <div className="modal-title">Мои заготовки</div>
+                <div className="snip-manager-sub">Готовые фразы, которые можно быстро вставлять в разделы документа.</div>
                 <div className="snip-manager-list">
-                  {snippets.map(s => (
-                    <div key={s.id} className="snip-manager-item">
-                      <div className="snip-manager-info">
-                        <div className="snip-label">{s.label}</div>
-                        <div className="snip-preview">{s.text.slice(0, 60)}...</div>
-                      </div>
-                      <button className="snip-delete" onClick={() => deleteSnippet(s.id)}>✕</button>
+                  {snippets.length === 0 ? (
+                    <div className="snip-empty">
+                      <div className="snip-empty-text">У вас пока нет заготовок.</div>
+                      <button className="snip-seed-btn" onClick={ensureSnippets}>Загрузить стандартный набор</button>
                     </div>
-                  ))}
+                  ) : (
+                    snippets.map(s => (
+                      <SnippetManagerItem key={s.id} snippet={s} onUpdate={updateSnippet} onDelete={deleteSnippet} />
+                    ))
+                  )}
                 </div>
                 <div className="snip-add-form">
-                  <div className="snip-add-title">Добавить сниппет</div>
+                  <div className="snip-add-title">Добавить новую заготовку</div>
                   <input className="auth-input" placeholder="Название (например: Сознание ясное)" value={newSnipLabel} onChange={e => setNewSnipLabel(e.target.value)} />
-                  <textarea className="sec-edit-input" placeholder="Текст сниппета..." value={newSnipText} onChange={e => setNewSnipText(e.target.value)} style={{minHeight:80}} />
+                  <textarea className="sec-edit-input" placeholder="Текст фразы..." value={newSnipText} onChange={e => setNewSnipText(e.target.value)} style={{minHeight:80}} />
                   <button className="modal-confirm" onClick={addSnippet} disabled={!newSnipLabel.trim() || !newSnipText.trim()}>Добавить</button>
                 </div>
                 <button className="modal-cancel" onClick={() => setShowSnipManager(false)}>Закрыть</button>

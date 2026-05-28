@@ -174,12 +174,20 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .sec-edit-btn { background: none; border: none; font-size: 11px; color: var(--gray-400); cursor: pointer; font-family: var(--font); font-weight: 500; padding: 4px 8px; border-radius: 6px; transition: all 0.15s; }
 .sec-edit-btn:hover { background: var(--gray-100); color: var(--gray-700); }
 
-/* Snippet quick-phrase chips */
-.snip-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
-.snip-chip { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 16px; padding: 5px 12px; font-size: 12px; font-weight: 500; color: var(--gray-600); cursor: pointer; font-family: var(--font); transition: all 0.15s; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
-.snip-chip:hover { background: var(--green-50); border-color: var(--green-500); color: var(--green-700); }
-.snip-chip::before { content: "+ "; color: var(--gray-400); font-weight: 600; }
-.snip-chip:hover::before { color: var(--green-500); }
+/* Snippet dropdown (Заготовки) */
+.snip-zone { position: relative; margin-top: 12px; }
+.snip-toggle { display: inline-flex; align-items: center; gap: 6px; background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 500; color: var(--gray-600); cursor: pointer; font-family: var(--font); transition: all 0.15s; }
+.snip-toggle:hover { background: var(--green-50); border-color: var(--green-500); color: var(--green-700); }
+.snip-toggle.open { background: var(--green-50); border-color: var(--green-500); color: var(--green-700); }
+.snip-toggle-arrow { font-size: 10px; transition: transform 0.15s; }
+.snip-toggle.open .snip-toggle-arrow { transform: rotate(180deg); }
+.snip-dropdown { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; background: white; border: 1px solid var(--gray-200); border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.12); padding: 6px; min-width: 320px; max-width: 420px; max-height: 360px; overflow-y: auto; animation: fadeUp 0.15s ease; }
+.snip-dropdown-item { display: block; width: 100%; text-align: left; background: none; border: none; border-radius: 8px; padding: 10px 12px; cursor: pointer; font-family: var(--font); transition: background 0.12s; }
+.snip-dropdown-item:hover { background: var(--green-50); }
+.snip-dropdown-label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-900); margin-bottom: 2px; }
+.snip-dropdown-preview { display: block; font-size: 12px; color: var(--gray-500); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.snip-dropdown-manage { display: block; width: 100%; text-align: left; background: none; border: none; border-top: 1px solid var(--gray-100); margin-top: 4px; padding: 10px 12px; cursor: pointer; font-family: var(--font); font-size: 13px; font-weight: 600; color: var(--green-600); border-radius: 0 0 8px 8px; }
+.snip-dropdown-manage:hover { background: var(--green-50); }
 .sec-text { font-size: 14px; line-height: 1.7; color: var(--gray-800); margin: 0; }
 .sec-card.sec-missing .sec-text { color: var(--gray-400); font-style: italic; }
 .sections > div:has(.sec-missing) { background: #fffbfb; border-color: #fecaca; }
@@ -275,6 +283,20 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .snip-manager-info .snip-preview { font-size: 12px; color: var(--gray-500); line-height: 1.4; word-break: break-word; }
 .snip-delete { background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 14px; padding: 4px 8px; border-radius: 6px; transition: all 0.15s; flex-shrink: 0; }
 .snip-delete:hover { background: #fee2e2; color: var(--red-500); }
+.snip-manager-sub { font-size: 12px; color: var(--gray-500); margin-top: 4px; line-height: 1.4; }
+.snip-manager-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.snip-edit-icon { background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 12px; font-weight: 500; padding: 4px 8px; border-radius: 6px; transition: all 0.15s; font-family: var(--font); }
+.snip-edit-icon:hover { background: var(--gray-100); color: var(--gray-700); }
+.snip-manager-item.editing { flex-direction: column; align-items: stretch; }
+.snip-edit-btns { display: flex; gap: 8px; margin-top: 8px; }
+.snip-save-btn { flex: 1; padding: 8px; background: var(--green-500); color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font); }
+.snip-save-btn:hover { background: var(--green-600); }
+.snip-cancel-btn { flex: 1; padding: 8px; background: white; color: var(--gray-600); border: 1px solid var(--gray-200); border-radius: 8px; font-size: 13px; cursor: pointer; font-family: var(--font); }
+.snip-cancel-btn:hover { background: var(--gray-50); }
+.snip-empty { text-align: center; padding: 24px 16px; }
+.snip-empty-text { font-size: 13px; color: var(--gray-500); margin-bottom: 12px; }
+.snip-seed-btn { padding: 9px 18px; background: var(--green-50); color: var(--green-700); border: 1px solid var(--green-100); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font); }
+.snip-seed-btn:hover { background: var(--green-100); }
 .snip-add-form { padding-top: 14px; border-top: 1px solid var(--gray-100); display: flex; flex-direction: column; gap: 8px; }
 .snip-add-title { font-size: 13px; font-weight: 600; color: var(--gray-700); margin-bottom: 4px; }
 .snip-add-form .modal-confirm { width: 100%; padding: 12px; }
