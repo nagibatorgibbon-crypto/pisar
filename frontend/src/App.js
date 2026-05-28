@@ -218,10 +218,10 @@ function SectionCard({ title, content, idx, showHints, onContentChange }) {
   return (
     <div className={`sec-card ${isMissing ? "sec-missing" : ""}`} style={{ animationDelay: `${idx * 0.06}s` }}>
       <div className="sec-head">
-        <h3 className="sec-title">{isMissing && <span className="missing-dot">!</span>}{title}</h3>
+        <h3 className="sec-title">{title}{isMissing && <span className="empty-tag">не заполнено</span>}</h3>
         <div className="sec-actions">
-          {!editing && <button onClick={() => { setEditVal(content); setEditing(true); }} className="sec-edit-btn">Изменить</button>}
-          <button onClick={copy} className={`sec-copy ${copied ? "ok" : ""}`}>{copied ? "\u2713 Скопировано" : "Копировать"}</button>
+          {!editing && <button onClick={() => { setEditVal(isMissing ? "" : content); setEditing(true); }} className="sec-edit-btn">{isMissing ? "Заполнить" : "Изменить"}</button>}
+          {!isMissing && <button onClick={copy} className={`sec-copy ${copied ? "ok" : ""}`}>{copied ? "\u2713 Скопировано" : "Копировать"}</button>}
         </div>
       </div>
       {editing ? (
@@ -232,10 +232,9 @@ function SectionCard({ title, content, idx, showHints, onContentChange }) {
             <button className="sec-edit-cancel" onClick={cancelEdit}>Отмена</button>
           </div>
         </div>
-      ) : (
+      ) : !isMissing ? (
         <p className="sec-text">{content}</p>
-      )}
-      {isMissing && !editing && <div className="missing-hint">Врач не предоставил данные для этого раздела</div>}
+      ) : null}
     </div>
   );
 }
@@ -987,7 +986,7 @@ export default function App() {
         </div>
       </div>
       {showHints && (data.sections || []).some(s => !s.content || s.content === "Данные не предоставлены") && (
-        <div className="hints-banner">Разделы, отмеченные красным, не заполнены — врач не предоставил данные.</div>
+        <div className="hints-banner">Часть разделов осталась незаполненной — нажмите «Заполнить» или вставьте заготовку, если нужно.</div>
       )}
       {data.summary && <div className="summary">{data.summary}</div>}
       <div className="sections">{(data.sections || []).map((s, i) => (

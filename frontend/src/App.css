@@ -155,7 +155,7 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .p-label { font-size: 10px; color: var(--gray-400); text-transform: uppercase; font-weight: 600; }
 .p-value { font-size: 13px; font-weight: 500; }
 .p-value.code { color: var(--blue-500); font-weight: 700; }
-.hints-banner { background: #fff3cd; border-radius: 8px; padding: 10px 14px; font-size: 12px; color: #856404; margin-bottom: 14px; font-weight: 500; }
+.hints-banner { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--gray-500); margin-bottom: 14px; font-weight: 500; }
 .summary { font-size: 13px; color: var(--gray-600); padding: 10px 14px; background: var(--green-50); border-radius: var(--radius-sm); margin-bottom: 12px; line-height: 1.5; }
 
 /* Section cards → separate blocks */
@@ -166,7 +166,8 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .sec-card.sec-missing { padding-left: 0; border-left: none; }
 .sec-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
 .sec-title { font-size: 11px; font-weight: 700; color: var(--green-500); text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }
-.sec-card.sec-missing .sec-title { color: var(--red-500); display: flex; align-items: center; gap: 5px; }
+.sec-card.sec-missing .sec-title { color: var(--gray-400); display: flex; align-items: center; gap: 8px; }
+.empty-tag { font-size: 9px; font-weight: 600; color: var(--gray-400); background: var(--gray-100); padding: 2px 7px; border-radius: 10px; text-transform: none; letter-spacing: 0; }
 .sec-copy { background: none; border: none; font-size: 11px; color: var(--gray-400); cursor: pointer; font-family: var(--font); font-weight: 500; padding: 4px 8px; border-radius: 6px; transition: all 0.15s; }
 .sec-copy:hover { background: var(--gray-100); color: var(--gray-700); }
 .sec-copy.ok { color: var(--green-500); background: var(--green-50); }
@@ -190,8 +191,8 @@ body { font-family: var(--font); background: var(--gray-50); color: var(--gray-9
 .snip-dropdown-manage:hover { background: var(--green-50); }
 .sec-text { font-size: 14px; line-height: 1.7; color: var(--gray-800); margin: 0; }
 .sec-card.sec-missing .sec-text { color: var(--gray-400); font-style: italic; }
-.sections > div:has(.sec-missing) { background: #fffbfb; border-color: #fecaca; }
-.sections > div:has(.sec-missing):hover { border-color: var(--red-500); box-shadow: 0 4px 16px rgba(239,68,68,0.08); }
+.sections > div:has(.sec-missing) { background: var(--gray-50); border-color: var(--gray-200); }
+.sections > div:has(.sec-missing):hover { border-color: var(--green-500); box-shadow: 0 4px 16px rgba(13,124,95,0.08); }
 .missing-dot { display: inline-flex; width: 14px; height: 14px; background: var(--red-500); color: white; border-radius: 50%; font-size: 9px; font-weight: 700; align-items: center; justify-content: center; }
 .missing-hint { font-size: 12px; color: var(--red-500); margin-top: 4px; font-style: italic; }
 
